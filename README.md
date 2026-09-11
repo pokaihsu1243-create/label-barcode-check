@@ -11,8 +11,9 @@
 1. 開啟網頁：<https://pokaihsu1243-create.github.io/label-barcode-check/>
    （要離線用的話，雙擊資料夾裡的 **`離線啟動.bat`**，它會起一個只聽本機的小伺服器並自動開好瀏覽器。）
 2. 填入「這份稿應該有幾個條碼」——**不填就不算數量已核對**：整批少印一個條碼，程式是看不出來的。
-3. 把 PDF（或掃描／拍照的圖檔）拖進去。
-4. 看結論燈號 → 看逐列判定 → 用疊合對照圖自己複查一遍 → 需要留底就按「列印／存成 PDF」。
+3. 把 PDF（或掃描／拍照的 TIFF／JPG／PNG，多頁 TIFF 會每一頁都掃）拖進去。
+4. 看結論燈號 → 看逐列判定 → 用疊合對照圖自己複查一遍 →
+   需要留底就按「列印／存成 PDF」，在印表機清單選「另存為 PDF」（版面已排成 A4 橫式）。
 
 第一次開啟要下載約 24MB（程式相依 14MB＋辨識模型 10MB），之後瀏覽器會自己留著，不必重新下載
 （清除瀏覽器資料、無痕視窗、換瀏覽器或換電腦會重新下載一次）。
@@ -60,6 +61,7 @@ js/template.js        模板疊合比對
 js/verdict.js         字形群聚覆核與定案規則
 js/overlay.js         疊合對照圖、原圖對照頁
 js/frames.js          從 PDF 向量線框抓標籤外框，把條碼分組
+js/tiff.js            TIFF 解碼（瀏覽器本身不認 TIFF），多頁會全部解
 models/               PP-OCRv3 辨識模型與字典
 離線啟動.bat          雙擊即可在本機離線使用（會叫 devserver.py 並開好瀏覽器）
 devserver.py          只聽 127.0.0.1 的小伺服器；加 --dev 才會多開存圖用的 POST /save
@@ -93,15 +95,21 @@ verify-geometry.html  早期的可行性驗證頁，保留當紀錄
 **同一個** zxing 引擎，判定規則與門檻也是照著移植的。在實稿上兩邊逐字比對過：
 條碼內容、OCR 結果、字形覆核、模板比對、判定結果、標籤分組全部一致。
 
+影像輸入也做了同樣的處理：EXIF 轉向照做、寬度不足 1600px 的圖先放大
+（不放大的話數字只有十幾個畫素高，切不出字形，整份會變成一堆「待確認」）。
+
 一個已知差異：**OCR 信心分數的尺度不同**。桌面版的分數來自 RapidOCR（偵測框的平均），
 網頁版是自己算 CTC 各時間步的平均機率，同一張圖兩邊的數字不會一樣。
 這個分數只在「信心低 **且** 沒有模板比對佐證」時才會改變判定，實務上模板比對幾乎都在，
 所以影響很小——但它確實不是同一把尺，不要拿兩邊的分數互相比較。
+
+另一個差異：桌面版可以用背景的 Edge 直接產生一個 .pdf 檔；網頁版沒有辦法自己寫檔，要在列印對話框選「另存為 PDF」。版面兩邊是一樣的。
 
 ## 第三方
 
 - [pdf.js](https://mozilla.github.io/pdf.js/)（Apache-2.0）
 - [zxing-wasm](https://github.com/Sec-ant/zxing-wasm) / zxing-cpp（Apache-2.0）
 - [onnxruntime-web](https://onnxruntime.ai/)（MIT）
+- [UTIF](https://github.com/photopea/UTIF.js)（MIT）與 [pako](https://github.com/nodeca/pako)（MIT）：TIFF 解碼
 - PP-OCRv3 辨識模型，來自 [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR)／
   [RapidOCR](https://github.com/RapidAI/RapidOCR)（Apache-2.0）

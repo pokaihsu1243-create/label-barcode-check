@@ -44,7 +44,12 @@ td.cmp img{max-width:430px}
 .why{font-size:12.5px;color:#475569;max-width:330px}
 .why .weak{color:#ad6800}
 .hint{color:#64748b;font-size:12px}
-.ovw img{width:100%;max-width:100%;border:0;border-radius:0;cursor:zoom-in}
+.ovblock{padding:10px 16px 16px}
+.ovbar{display:flex;gap:8px;align-items:center;margin:0 0 8px;font-size:12px}
+.ovbar button{background:#fff;border:1px solid #b6c2d1;color:#1f3a5f;border-radius:6px;padding:4px 10px;font-size:12.5px}
+.ovbar button:hover{background:#eef4ff}
+.ovbox{position:relative;width:100%;background:#fff;border:1px solid #e2e8f0;border-radius:6px;overflow:hidden}
+.ovbox img{position:absolute;left:50%;top:50%;transform-origin:center center;max-width:none;width:auto;border:0;border-radius:0;cursor:zoom-in;display:block}
 dialog{border:0;border-radius:10px;padding:0;max-width:96vw;max-height:96vh;background:#fff}
 dialog img{display:block;max-width:94vw;max-height:92vh}
 dialog::backdrop{background:rgba(15,23,42,.75)}
@@ -55,11 +60,25 @@ dialog::backdrop{background:rgba(15,23,42,.75)}
 .fail p{margin:0}
 .fail code{background:#fff;border:1px solid #f0cccc;border-radius:4px;padding:1px 5px;font-size:13px}
 .fail a{color:#1f3a5f}
+/* 列印＝存成 PDF。版面刻意做成與桌面版報告相同：A4 橫式、表格縮排、圖縮小，
+   讓「另存為 PDF」拿到的檔案跟桌面版自動產出的那份等價。 */
 @media print{
-  header,#drop,.bar,#status,button{display:none!important}
-  body{background:#fff}
-  tr{break-inside:avoid}
+  @page{size:A4 landscape;margin:8mm}
+  header,#drop,.bar,#status,.ovbar,button{display:none!important}
+  body{background:#fff;margin:0}
+  .wrap{max-width:none;padding:0}
+  .card{border-color:#ccc;border-radius:0;margin:6px 0}
+  th,td{padding:5px;font-size:11px}
+  .mono{font-size:12px}
+  td img{max-width:150px}
+  td.cmp img{max-width:290px}
+  tr,.ovblock{break-inside:avoid;page-break-inside:avoid}
   .ovw{break-before:page}
+  /* 對照頁在畫面上是絕對定位＋旋轉，印的時候要攤回正常流，否則會整張不見 */
+  .ovbox{height:auto!important;position:static;overflow:visible;border:0}
+  .ovbox img{position:static!important;transform:none!important;width:auto!important;
+             max-width:100%!important;max-height:176mm!important;margin:0 auto}
+  *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
 }
 </style>
 </head>
@@ -71,10 +90,10 @@ dialog::backdrop{background:rgba(15,23,42,.75)}
 <div class="wrap">
 
   <div id="drop">
-    <div class="big">把標籤 PDF（或掃描／拍照的圖檔）拖到這裡</div>
+    <div class="big">把標籤 PDF（或掃描／拍照的 TIFF／JPG／PNG）拖到這裡</div>
     <div class="sm">也可以點一下選檔　·　第一次開啟要下載約 24MB 的程式與辨識模型（之後瀏覽器會自己留著，不必再下載）</div>
   </div>
-  <input id="picker" type="file" accept=".pdf,.png,.jpg,.jpeg,.webp" hidden>
+  <input id="picker" type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.tif,.tiff,.bmp" hidden>
 
   <div class="bar">
     <label>這份稿應該有幾個條碼：<input id="expect" type="number" min="1" step="1" placeholder="選填"></label>
@@ -263,10 +282,50 @@ function report(res, name) {
   for (const ov of res.overviews)
     html.push(`<div class="card ovw"><h3>原圖對照頁（第 ${ov.no} 頁）
       <span class="hint">——在每個印刷數字正下方補上條碼解出的數字，方向跟著標籤走</span></h3>
-      <img src="${ov.img}" alt="原圖對照"></div>`);
+      <div class="ovblock">
+        <div class="ovbar">
+          <button type="button" data-rot="-90">↺ 左轉 90°</button>
+          <button type="button" data-rot="90">↻ 右轉 90°</button>
+          <button type="button" data-rot="0">回正</button>
+          <span class="hint">旋轉不影響判定，只是方便你照實際貼標的方向核對</span>
+        </div>
+        <div class="ovbox"><img src="${ov.img}" alt="原圖對照"></div>
+      </div></div>`);
 
   out.innerHTML = html.join('');
+  // 圖是 data URI，但仍然是「非同步載入」的：剛塞進 DOM 時 naturalWidth 還是 0，
+  // 這時候算尺寸會算不出來，對照頁就會是一條扁的。所以要等 load 再算一次。
+  out.querySelectorAll('.ovbox img').forEach(img => {
+    if (img.complete && img.naturalWidth) fitOverview(img);
+    else img.addEventListener('load', () => fitOverview(img), { once: true });
+  });
 }
+
+// ── 原圖對照頁的旋轉 ──────────────────────────────────────
+// 圖是絕對定位、以中心為原點旋轉，所以外框的高度要跟著轉後的長寬換算，
+// 否則轉 90° 之後會被自己的容器切掉一半。
+function fitOverview(img) {
+  const r = +(img.dataset.rot || 0);
+  const box = img.parentElement;
+  // 容器還沒有寬度時（剛插進 DOM、或分頁在背景）先不要算，否則會算出負寬度
+  const W = box.clientWidth - 16, nw = img.naturalWidth, nh = img.naturalHeight;
+  if (!nw || W <= 0) return;
+  const asp = nh / nw;
+  const w = (r % 180 === 0) ? Math.min(nw, W) : Math.min(nw, W / asp);
+  img.style.width = w + 'px';
+  box.style.height = (((r % 180 === 0) ? w * asp : w) + 16) + 'px';
+  img.style.transform = `translate(-50%,-50%) rotate(${r}deg)`;
+}
+
+out.addEventListener('click', e => {
+  const btn = e.target.closest('.ovbar button');
+  if (!btn) return;
+  const img = btn.closest('.ovblock').querySelector('img');
+  const d = +btn.dataset.rot;
+  img.dataset.rot = d === 0 ? 0 : ((+(img.dataset.rot || 0) + d) % 360 + 360) % 360;
+  fitOverview(img);
+});
+window.addEventListener('resize', () => out.querySelectorAll('.ovbox img').forEach(fitOverview));
 
 // 到這裡才算真的可以用了。載入期間有人先丟了檔案的話，現在接著跑。
 ui.ready = true;

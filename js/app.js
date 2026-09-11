@@ -8,6 +8,7 @@ import { shapeRead, finalize, tplNote, MAX_SKEW } from './verdict.js';
 import { compareImage, overviewImage } from './overlay.js';
 import * as io from './pdfio.js';
 import { labelFrames, ownerLabel } from './frames.js';
+import { isTiff, decodeTiff } from './tiff.js';
 
 export const DPI = 400;              // 主要解析度（與桌面版相同）
 export const DPI_HI = 800;           // 第二次獨立判讀的解析度
@@ -47,6 +48,10 @@ export async function check(file, expectTotal, progress) {
       const page = await pdf.getPage(n);
       pages.push({ no: n, page, cv: await io.renderPage(page, DPI) });
     }
+  } else if (isTiff(file)) {
+    say('解開 TIFF…');
+    const frames = await decodeTiff(await file.arrayBuffer());   // 多頁 TIFF 每一頁都要掃
+    frames.forEach((cv, i) => pages.push({ no: i + 1, page: null, cv: io.ensureMinWidth(cv) }));
   } else {
     pages.push({ no: 1, page: null, cv: await io.imageToCanvas(file) });
   }

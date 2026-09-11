@@ -134,19 +134,32 @@ export async function pdfWords(page, rect, dpi, ang) {
   }
 }
 
+export const MIN_WIDTH = 1600;   // 低於這個寬度的圖先放大，否則字太小切不出字形（與桌面版同）
+
+/**
+ * 太小的圖先放大。掃描或拍照的圖如果寬度不足，數字只有十幾個畫素高，
+ * 連通域切不出字形、模板比對也沒東西可比，整份會變成一堆「待確認」。
+ * 放大不會增加資訊，但能讓後面的形狀運算有足夠的取樣點——桌面版一樣是這樣處理的。
+ */
+export function ensureMinWidth(cv, minw = MIN_WIDTH) {
+  if (cv.width >= minw) return cv;
+  return upscale(cv, minw / cv.width);
+}
+
 /** 影像檔（拍照／掃描）輸入：直接當成一頁。 */
 export async function imageToCanvas(file) {
-  const bmp = await createImageBitmap(file);
+  // from-image：照片的 EXIF 轉向要照做，否則直的照片會被當成橫的（桌面版用 exif_transpose）
+  const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
   const cv = newCanvas(bmp.width, bmp.height);
   const c = ctx2d(cv);
   c.fillStyle = '#fff';
   c.fillRect(0, 0, cv.width, cv.height);
   c.drawImage(bmp, 0, 0);
   bmp.close && bmp.close();
-  return cv;
+  return ensureMinWidth(cv);
 }
 
-/** 照片沒有「重新渲染」可言，放大只是內插——回傳的圖標記為非真實高解析。 */
+/** 放大。照片沒有「重新渲染」可言，放大只是內插，不算新證據。 */
 export function upscale(src, k) {
   const cv = newCanvas(src.width * k, src.height * k);
   const c = ctx2d(cv);
