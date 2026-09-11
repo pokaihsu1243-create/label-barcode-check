@@ -50,6 +50,11 @@ dialog img{display:block;max-width:94vw;max-height:92vh}
 dialog::backdrop{background:rgba(15,23,42,.75)}
 .legend{font-size:12.5px;color:#475569;padding:8px 16px;background:#fbfcfd;border-top:1px solid #eef2f6}
 .sw{display:inline-block;width:11px;height:11px;border-radius:2px;vertical-align:-1px;margin:0 3px 0 10px}
+.fail{background:#fdecec;border:1px solid #f3a9a9;border-radius:12px;padding:16px 20px;font-size:14px}
+.fail h3{margin:0 0 8px;font-size:17px;color:#b00020;padding:0;border:0;background:none}
+.fail p{margin:0}
+.fail code{background:#fff;border:1px solid #f0cccc;border-radius:4px;padding:1px 5px;font-size:13px}
+.fail a{color:#1f3a5f}
 @media print{
   header,#drop,.bar,#status,button{display:none!important}
   body{background:#fff}
@@ -143,11 +148,24 @@ dialog::backdrop{background:rgba(15,23,42,.75)}
   // 以及網路／擴充套件把檔案擋掉。
   state.fail = function (err) {
     var msg = String((err && err.message) || err || '未知錯誤');
-    var hint = location.protocol === 'file:'
-      ? '這一頁不能用「直接開啟檔案」的方式跑（網址列是 file://）。請改用網址開啟，或在資料夾裡起一個本機伺服器。'
-      : '請確認網路正常；若瀏覽器裝了廣告攔截／安全性擴充套件，請對這個網站停用後重新整理。';
-    state.failed = '程式載入失敗：' + msg + '<br>' + hint;
+    var isFile = location.protocol === 'file:';
+    var hint = isFile
+      ? '<b>這一頁不能用「直接開啟檔案」的方式跑。</b>瀏覽器基於安全性，'
+        + '不允許 <code>file://</code> 的頁面載入 JS 模組，所以程式整個載不起來。<br><br>'
+        + '<b>兩個解法，挑一個：</b>'
+        + '<ol style="margin:6px 0 0;padding-left:22px">'
+        + '<li>直接用網址開：<a href="https://pokaihsu1243-create.github.io/label-barcode-check/">'
+        + 'https://pokaihsu1243-create.github.io/label-barcode-check/</a></li>'
+        + '<li>要離線用的話，雙擊這個資料夾裡的 <code>離線啟動.bat</code>（會自己開好瀏覽器）。</li>'
+        + '</ol>'
+      : '請確認網路正常；若瀏覽器裝了廣告攔截／安全性擴充套件，請對這個網站停用後重新整理。'
+        + '若是自己架的站，請確認 <code>js/</code>、<code>vendor/</code>、<code>models/</code> 三個資料夾都有一起放上去。';
+    state.failed = '程式載入失敗：' + msg;
     say(state.failed, true);
+    // 這是使用者最可能撞到的錯，講在小小的狀態列裡看不到——直接鋪一塊在畫面上
+    $('#out').innerHTML = '<div class="fail"><h3>⚠ 程式載入失敗</h3><p>' + hint
+      + '</p><p class="hint" style="margin-top:10px">技術細節：' + msg + '</p></div>';
+    $('#drop').style.display = 'none';
   };
   window.addEventListener('error', function (e) {
     if (!state.ready && e.target && e.target.tagName === 'SCRIPT') state.fail('指令碼載不到');
