@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>標籤條碼檢查（純網頁版）</title>
+<style>
+*{box-sizing:border-box}
+body{font-family:"Microsoft JhengHei","Segoe UI",sans-serif;margin:0;background:#f4f6f8;color:#1f2933;line-height:1.65}
+header{background:#1f3a5f;color:#fff;padding:14px 24px}
+header h1{margin:0;font-size:19px}
+header p{margin:2px 0 0;opacity:.85;font-size:13px}
+.wrap{max-width:1500px;margin:0 auto;padding:18px 22px 70px}
+#drop{border:3px dashed #b6c2d1;border-radius:14px;background:#fff;padding:30px 18px;text-align:center;cursor:pointer}
+#drop.hot{border-color:#1f3a5f;background:#eef4ff}
+#drop .big{font-size:16px;font-weight:700}
+#drop .sm{font-size:13px;color:#64748b;margin-top:4px}
+.bar{display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin:14px 0}
+.bar label{font-size:14px}
+.bar input[type=number]{width:110px;padding:6px 8px;border:1px solid #cbd5e1;border-radius:6px;font-size:14px}
+button{padding:8px 16px;border:0;border-radius:7px;background:#1f3a5f;color:#fff;font-size:14px;cursor:pointer}
+button.ghost{background:#fff;color:#1f3a5f;border:1px solid #c3cedd}
+#status{margin:10px 0;font-size:14px;color:#475569;min-height:22px}
+.verdict{border-radius:12px;padding:14px 18px;font-size:17px;font-weight:700;margin:14px 0}
+.verdict.ok{background:#e7f7ec;border:1px solid #86d79b;color:#0a7d32}
+.verdict.warn{background:#fff7e6;border:1px solid #ffd591;color:#ad6800}
+.verdict.bad{background:#fdecec;border:1px solid #f3a9a9;color:#b00020}
+.verdict .sub{display:block;font-size:13px;font-weight:400;margin-top:4px;color:#475569}
+.warns{background:#fff7e6;border:1px solid #ffd591;border-radius:8px;padding:10px 16px;font-size:13.5px;margin:12px 0}
+.warns li{margin:3px 0}
+.card{background:#fff;border:1px solid #e2e8f0;border-radius:12px;margin:16px 0;overflow:hidden}
+.card h3{margin:0;padding:11px 16px;font-size:15px;border-bottom:1px solid #eef2f6;background:#fbfcfd}
+table{border-collapse:collapse;width:100%}
+th,td{border-top:1px solid #eef2f6;padding:9px 10px;font-size:13px;vertical-align:top;text-align:left}
+th{background:#f8fafc;font-size:12px;color:#64748b;white-space:nowrap}
+.mono{font-family:Consolas,monospace;font-size:14.5px;letter-spacing:.6px;white-space:nowrap}
+.mono b{color:#b00020}
+td img{display:block;width:100%;max-width:260px;border:1px solid #eef2f6;border-radius:4px;cursor:zoom-in}
+td.cmp img{max-width:430px}
+.tag{display:inline-block;padding:2px 9px;border-radius:20px;font-size:12.5px;font-weight:700;white-space:nowrap}
+.t-ok{background:#e7f7ec;color:#0a7d32}
+.t-ng{background:#fdecec;color:#b00020}
+.t-ck{background:#fff4e0;color:#ad6800}
+.why{font-size:12.5px;color:#475569;max-width:330px}
+.why .weak{color:#ad6800}
+.hint{color:#64748b;font-size:12px}
+.ovw img{width:100%;max-width:100%;border:0;border-radius:0;cursor:zoom-in}
+dialog{border:0;border-radius:10px;padding:0;max-width:96vw;max-height:96vh;background:#fff}
+dialog img{display:block;max-width:94vw;max-height:92vh}
+dialog::backdrop{background:rgba(15,23,42,.75)}
+.legend{font-size:12.5px;color:#475569;padding:8px 16px;background:#fbfcfd;border-top:1px solid #eef2f6}
+.sw{display:inline-block;width:11px;height:11px;border-radius:2px;vertical-align:-1px;margin:0 3px 0 10px}
+@media print{
+  header,#drop,.bar,#status,button{display:none!important}
+  body{background:#fff}
+  tr{break-inside:avoid}
+  .ovw{break-before:page}
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>🏷️ 標籤條碼檢查</h1>
+  <p>條碼解碼 × 兩次 OCR × 字形覆核 × 模板疊合比對——全部在你的瀏覽器裡跑，檔案不會上傳到任何地方</p>
+</header>
+<div class="wrap">
+
+  <div id="drop">
+    <div class="big">把標籤 PDF（或掃描／拍照的圖檔）拖到這裡</div>
+    <div class="sm">也可以點一下選檔　·　第一次開啟要下載約 10MB 的辨識模型，之後瀏覽器會自己留著</div>
+  </div>
+  <input id="picker" type="file" accept=".pdf,.png,.jpg,.jpeg,.webp" hidden>
+
+  <div class="bar">
+    <label>這份稿應該有幾個條碼：<input id="expect" type="number" min="1" step="1" placeholder="選填"></label>
+    <span class="hint">填了才算「總數已核對」——不填的話，整批少印一個條碼程式是看不出來的。</span>
+    <button id="print" class="ghost" hidden>列印／存成 PDF</button>
+  </div>
+
+  <div id="status"></div>
+  <div id="out"></div>
+</div>
+
+<dialog id="zoom"><img id="zoomimg" alt=""></dialog>
+
+<script type="module">
+import { check, DPI, DPI_HI } from './js/app.js';
+
+const $ = s => document.querySelector(s);
+const drop = $('#drop'), picker = $('#picker'), out = $('#out'), status = $('#status');
+const zoom = $('#zoom'), zoomimg = $('#zoomimg');
+
+drop.onclick = () => picker.click();
+picker.onchange = e => e.target.files[0] && run(e.target.files[0]);
+['dragenter', 'dragover'].forEach(t =>
+  drop.addEventListener(t, e => { e.preventDefault(); drop.classList.add('hot'); }));
+['dragleave', 'drop'].forEach(t =>
+  drop.addEventListener(t, e => { e.preventDefault(); drop.classList.remove('hot'); }));
+drop.addEventListener('drop', e => e.dataTransfer.files[0] && run(e.dataTransfer.files[0]));
+$('#print').onclick = () => window.print();
+zoom.onclick = () => zoom.close();
+out.addEventListener('click', e => {
+  if (e.target.tagName === 'IMG') { zoomimg.src = e.target.src; zoom.showModal(); }
+});
+
+const esc = s => String(s ?? '').replace(/[&<>"]/g,
+  c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+/** 逐字比對，不同的位置標紅——讓人一眼看出是哪一個字錯。 */
+function diff(a, b) {
+  a = a || ''; b = b || '';
+  let s = '';
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const c = i < a.length ? a[i] : '·';
+    s += (c === (i < b.length ? b[i] : '·')) ? esc(c) : '<b>' + esc(c) + '</b>';
+  }
+  return s;
+}
+
+const TAG = { OK: ['t-ok', 'OK'], NG: ['t-ng', 'NG'], NOTEXT: ['t-ck', '讀不到字'] };
+
+let busy = false;
+async function run(file) {
+  if (busy) return;
+  busy = true;
+  out.innerHTML = '';
+  $('#print').hidden = true;
+  const expect = parseInt($('#expect').value, 10);
+  try {
+    const t0 = performance.now();
+    const res = await check(file, Number.isInteger(expect) && expect > 0 ? expect : null,
+                            m => { status.textContent = m; });
+    status.textContent = `完成：共 ${res.rows.length} 個條碼，字形覆核分出 ${res.nclu} 種字形，`
+      + `耗時 ${((performance.now() - t0) / 1000).toFixed(1)} 秒`;
+    report(res, file.name);
+    $('#print').hidden = false;
+  } catch (err) {
+    status.innerHTML = `<b style="color:#b00020">出錯了：${esc(err.message || err)}</b>`;
+    console.error(err);
+  } finally {
+    busy = false;
+  }
+}
+
+function report(res, name) {
+  const s = res.summary;
+  const html = [];
+  html.push(`<div class="verdict ${s.level}">${esc(s.text)}
+    <span class="sub">${esc(name)}　·　共 ${res.rows.length} 個條碼　·　NG ${s.ng} 個　·　待確認 ${s.chk} 個
+    　·　解析度 ${DPI}／${DPI_HI} dpi</span></div>`);
+
+  if (res.warns.length)
+    html.push('<div class="warns"><b>需要注意：</b><ul>'
+      + res.warns.map(w => `<li>${esc(w)}</li>`).join('') + '</ul></div>');
+
+  html.push(`<div class="card"><h3>逐個條碼的核對結果</h3><table>
+    <tr><th>頁／標籤</th><th>條碼解出</th><th>印刷數字<br><span class="hint">OCR</span></th>
+        <th>判定</th><th>說明</th><th>原圖</th><th>疊合對照</th></tr>`);
+  for (const r of res.rows) {
+    const [cls, label] = TAG[r.verdict] || ['t-ck', '待確認'];
+    const note = r.tplNote
+      ? `<div class="${r.tplNote.weak ? 'weak' : ''}">${r.tplNote.bad ? '⚠ ' : '✓ '}${esc(r.tplNote.text)}</div>`
+      : '';
+    html.push(`<tr>
+      <td class="hint">第 ${r.page} 頁${r.label > 0 ? `<br>第 ${r.label} 張` : ''}${r.orient ? `<br>${r.orient}°` : ''}</td>
+      <td class="mono">${diff(r.bc, r.ocr)}</td>
+      <td class="mono">${diff(r.ocr, r.bc)}<div class="hint">信心 ${r.score.toFixed(2)}</div></td>
+      <td><span class="tag ${cls}">${label}</span></td>
+      <td class="why">${esc(r.reason)}${note}</td>
+      <td>${r.img ? `<img src="${r.img}" alt="原圖">` : ''}</td>
+      <td class="cmp">${r.cmp ? `<img src="${r.cmp}" alt="疊合對照">` : '<span class="hint">—</span>'}</td>
+    </tr>`);
+  }
+  html.push(`</table><div class="legend">
+    <b>疊合對照怎麼看：</b>紅字＝條碼解出的內容，藍字＝OCR 讀到的字，直接疊在印刷字上，對得起來就是形狀重合。
+    <span class="sw" style="background:#d60000"></span>紅框＝模板比對認定與條碼不符
+    <span class="sw" style="background:#e69100"></span>橘框＝程式自己也不確定的字，請人眼複查。
+  </div></div>`);
+
+  for (const ov of res.overviews)
+    html.push(`<div class="card ovw"><h3>原圖對照頁（第 ${ov.no} 頁）
+      <span class="hint">——在每個印刷數字正下方補上條碼解出的數字，方向跟著標籤走</span></h3>
+      <img src="${ov.img}" alt="原圖對照"></div>`);
+
+  out.innerHTML = html.join('');
+}
+
+window.__check = check;      // 給自動化測試用
+</script>
+</body>
+</html>

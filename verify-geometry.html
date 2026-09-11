@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>標籤條碼檢查（純網頁版・可行性驗證）</title>
+<style>
+*{box-sizing:border-box}
+body{font-family:"Microsoft JhengHei","Segoe UI",sans-serif;margin:0;background:#f4f6f8;color:#1f2933;line-height:1.6}
+header{background:#1f3a5f;color:#fff;padding:16px 24px}
+header h1{margin:0;font-size:19px}
+header p{margin:2px 0 0;opacity:.85;font-size:13px}
+.wrap{max-width:1400px;margin:0 auto;padding:18px 22px 60px}
+#drop{border:3px dashed #b6c2d1;border-radius:14px;background:#fff;padding:34px 18px;text-align:center;cursor:pointer}
+#drop.hot{border-color:#1f3a5f;background:#eef4ff}
+#drop .big{font-size:16px;font-weight:700}
+#drop .sm{font-size:13px;color:#64748b}
+.note{background:#fff7e6;border:1px solid #ffd591;border-radius:8px;padding:10px 14px;font-size:13px;margin:14px 0}
+#status{margin:14px 0;font-size:14px;color:#475569;min-height:22px}
+.card{background:#fff;border:1px solid #e2e8f0;border-radius:12px;margin:16px 0;overflow:hidden}
+.card h3{margin:0;padding:12px 16px;font-size:15px;border-bottom:1px solid #eef2f6}
+table{border-collapse:collapse;width:100%}
+th,td{border-top:1px solid #eef2f6;padding:8px 10px;font-size:13px;text-align:left;vertical-align:middle}
+th{background:#f8fafc;font-size:12px;color:#64748b}
+.mono{font-family:Consolas,monospace;font-size:14px;letter-spacing:1px}
+td img{display:block;max-width:520px;border:1px solid #eef2f6;border-radius:4px}
+.ok{color:#0a7d32;font-weight:700}
+.hint{color:#64748b;font-size:12px}
+pre{background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;overflow:auto;font-size:12px;margin:0}
+</style>
+</head>
+<body>
+<header>
+  <h1>🏷️ 標籤條碼檢查 — 純網頁版可行性驗證</h1>
+  <p>不上傳任何檔案：PDF 解析、條碼解碼、字形切割、疊合對照全部在你的瀏覽器裡完成</p>
+</header>
+<div class="wrap">
+
+  <div class="note">
+    <b>這是驗證版，還不做判定。</b>目的是確認三件事能不能在瀏覽器裡做到：
+    ①條碼解碼結果與桌面版逐字一致　②文字區與方向（含顛倒標籤）定位正確　③逐字切割與疊合對照畫得出來。
+    <b>OCR 尚未接上</b>，所以不會有 OK／NG。
+  </div>
+
+  <div id="drop">
+    <div class="big">把標籤 PDF 拖到這裡</div>
+    <div class="sm">也可以點一下選檔　·　檔案不會離開這台電腦</div>
+  </div>
+  <input id="picker" type="file" accept=".pdf" hidden>
+
+  <div id="status"></div>
+  <div id="out"></div>
+</div>
+
+<script type="module">
+import * as pdfjsLib from "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.6.82/build/pdf.min.mjs";
+// 與桌面版同一個 C++ 引擎（zxing-cpp）編成 wasm，解碼結果應該逐字一致
+import { readBarcodes } from "https://cdn.jsdelivr.net/npm/zxing-wasm@3.1.4/dist/es/reader/index.js";
+
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.6.82/build/pdf.worker.min.mjs";
+
+const DPI = 400;                       // 與桌面版相同，方便逐項比對
+const $ = s => document.querySelector(s);
+const drop = $('#drop'), picker = $('#picker'), out = $('#out'), status = $('#status');
+
+drop.onclick = () => picker.click();
+picker.onchange = e => e.target.files[0] && run(e.target.files[0]);
+['dragenter','dragover'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.add('hot'); }));
+['dragleave','drop'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.remove('hot'); }));
+drop.addEventListener('drop', e => e.dataTransfer.files[0] && run(e.dataTransfer.files[0]));
+
+const esc = s => (s || '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+async function run(file){
+  out.innerHTML = '';
+  status.textContent = '讀取 PDF…';
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+  const all = [];
+  for (let n = 1; n <= pdf.numPages; n++){
+    status.textContent = `第 ${n}/${pdf.numPages} 頁：渲染中…`;
+    const page = await pdf.getPage(n);
+    const vp = page.getViewport({ scale: DPI / 72 });
+    const cv = document.createElement('canvas');
+    cv.width = Math.floor(vp.width); cv.height = Math.floor(vp.height);
+    const ctx = cv.getContext('2d', { willReadFrequently: true });
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height);
+    await page.render({ canvasContext: ctx, viewport: vp }).promise;
+
+    status.textContent = `第 ${n}/${pdf.numPages} 頁：解碼中…`;
+    const img = ctx.getImageData(0, 0, cv.width, cv.height);
+    const found = await readBarcodes(img, { tryHarder: true, maxNumberOfSymbols: 64 });
+    for (const r of found) all.push(render(ctx, cv, r, n));
+  }
+  status.innerHTML = `完成：共解出 <b>${all.length}</b> 個條碼`;
+  report(all);
+}
+
+// ── 幾何：與桌面版同一套算式 ───────────────────────────────
+// zxing 的 top/bottom 是「頁面座標」的上下，只有 topLeft→topRight 是條碼的閱讀方向，
+// 垂直方向必須由閱讀方向轉 90° 求得，否則 180° 的標籤會抓到反邊。
+function geom(pos, W, H){
+  const p = [pos.topLeft, pos.topRight, pos.bottomRight, pos.bottomLeft].map(q => [q.x, q.y]);
+  const right = [p[1][0] - p[0][0], p[1][1] - p[0][1]];
+  const rn = Math.hypot(right[0], right[1]);
+  if (rn < 1) return null;
+  const r = [right[0]/rn, right[1]/rn];
+  const d = [-r[1], r[0]];
+  const rp = p.map(q => q[0]*r[0] + q[1]*r[1]);
+  const dp = p.map(q => q[0]*d[0] + q[1]*d[1]);
+  const lo = a => Math.min(...a), hi = a => Math.max(...a);
+  const width = hi(rp) - lo(rp), thick = hi(dp) - lo(dp);
+  const gap = thick*0.05, ext = thick*1.15, side = width*0.06;
+  const corners = [];
+  for (const a of [lo(rp)-side, hi(rp)+side])
+    for (const b of [hi(dp)+gap, hi(dp)+gap+ext])
+      corners.push([r[0]*a + d[0]*b, r[1]*a + d[1]*b]);
+  const xs = corners.map(c => c[0]), ys = corners.map(c => c[1]);
+  const ang = Math.round(Math.atan2(r[1], r[0]) * 180 / Math.PI / 90) * 90;
+  return {
+    rect: [Math.max(0,lo(xs)), Math.max(0,lo(ys)), Math.min(W,hi(xs)), Math.min(H,hi(ys))],
+    ang, bbox: [lo(p.map(q=>q[0])), lo(p.map(q=>q[1])), hi(p.map(q=>q[0])), hi(p.map(q=>q[1]))]
+  };
+}
+
+function upright(src, ang){            // 轉正：與桌面版 rotate(ang) 等效
+  const a = ((ang % 360) + 360) % 360;
+  if (!a) return src;
+  const cv = document.createElement('canvas');
+  const swap = (a === 90 || a === 270);
+  cv.width = swap ? src.height : src.width;
+  cv.height = swap ? src.width : src.height;
+  const c = cv.getContext('2d', { willReadFrequently: true });
+  c.translate(cv.width/2, cv.height/2);
+  c.rotate(-a * Math.PI / 180);        // canvas 的旋轉方向與 PIL 相反
+  c.drawImage(src, -src.width/2, -src.height/2);
+  return cv;
+}
+
+// ── 字形切割：連通域，等同桌面版 cv2.connectedComponents 的用法 ──
+function glyphs(cv){
+  const c = cv.getContext('2d', { willReadFrequently: true });
+  const { data, width: W, height: H } = c.getImageData(0, 0, cv.width, cv.height);
+  const dark = new Uint8Array(W*H);
+  let sum = 0;
+  for (let i = 0; i < W*H; i++) sum += data[i*4];
+  const th = sum/(W*H) * 0.72;         // 簡易門檻：平均亮度的 72%
+  for (let i = 0; i < W*H; i++) dark[i] = data[i*4] < th ? 1 : 0;
+
+  const seen = new Uint8Array(W*H), boxes = [];
+  const stack = new Int32Array(W*H);
+  for (let i = 0; i < W*H; i++){
+    if (!dark[i] || seen[i]) continue;
+    let sp = 0; stack[sp++] = i; seen[i] = 1;
+    let x0 = i%W, x1 = x0, y0 = (i/W)|0, y1 = y0, area = 0;
+    while (sp){
+      const p = stack[--sp], px = p%W, py = (p/W)|0; area++;
+      if (px < x0) x0 = px; if (px > x1) x1 = px;
+      if (py < y0) y0 = py; if (py > y1) y1 = py;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++){
+        const nx = px+dx, ny = py+dy;
+        if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+        const q = ny*W + nx;
+        if (dark[q] && !seen[q]){ seen[q] = 1; stack[sp++] = q; }
+      }
+    }
+    boxes.push({ x: x0, y: y0, w: x1-x0+1, h: y1-y0+1, area });
+  }
+  // 濾掉外框線與雜點，再取「同高元件最多的那一群」當字高（中位數會被外框帶歪）
+  const cand = boxes.filter(b => b.h <= H*0.85 && b.w <= W*0.4 && b.w <= b.h*3 && b.h >= 3 && b.area >= 12);
+  if (!cand.length) return [];
+  let hm = cand[0].h, best = 0;
+  for (const b of cand){
+    const n = cand.filter(o => o.h >= b.h*0.8 && o.h <= b.h*1.25).length;
+    if (n > best){ best = n; hm = b.h; }
+  }
+  return cand.filter(b => b.h >= hm*0.55 && b.h <= hm*1.8 && b.w <= hm*2.5)
+             .sort((a,b) => a.x - b.x);
+}
+
+// ── 疊合對照：把條碼解出的字逐字畫在印刷字正下方 ──
+function overlay(crop, gl, text){
+  if (!gl.length) return crop;
+  const m = Math.round(gl[0].h * 0.3);
+  const x0 = Math.max(0, Math.min(...gl.map(g=>g.x)) - m);
+  const x1 = Math.min(crop.width, Math.max(...gl.map(g=>g.x+g.w)) + m);
+  const y0 = Math.max(0, Math.min(...gl.map(g=>g.y)) - m);
+  const y1 = Math.min(crop.height, Math.max(...gl.map(g=>g.y+g.h)) + m);
+  const hmed = gl.map(g=>g.h).sort((a,b)=>a-b)[gl.length>>1];
+  const rowH = Math.round(hmed*1.5);
+  const cv = document.createElement('canvas');
+  cv.width = x1-x0; cv.height = (y1-y0) + rowH + 8;
+  const c = cv.getContext('2d');
+  c.fillStyle = '#fff'; c.fillRect(0,0,cv.width,cv.height);
+  c.drawImage(crop, x0, y0, x1-x0, y1-y0, 0, 0, x1-x0, y1-y0);
+  c.font = `${Math.round(hmed*1.05)}px Arial`;
+  c.fillStyle = '#d60000'; c.textBaseline = 'middle'; c.textAlign = 'center';
+  const cy = (y1-y0) + 6 + rowH/2;
+  for (let i = 0; i < Math.min(gl.length, text.length); i++)
+    c.fillText(text[i], gl[i].x - x0 + gl[i].w/2, cy);
+  return cv;
+}
+
+function render(ctx, pageCv, r, pageNo){
+  const g = geom(r.position, pageCv.width, pageCv.height);
+  const [rx0, ry0, rx1, ry1] = g.rect;
+  const tmp = document.createElement('canvas');
+  tmp.width = Math.max(1, Math.round(rx1-rx0)); tmp.height = Math.max(1, Math.round(ry1-ry0));
+  tmp.getContext('2d').drawImage(pageCv, rx0, ry0, tmp.width, tmp.height, 0, 0, tmp.width, tmp.height);
+  const crop = upright(tmp, g.ang);
+  const gl = glyphs(crop);
+  return { page: pageNo, text: r.text, format: r.format, ang: ((g.ang%360)+360)%360,
+           glyphCount: gl.length, img: overlay(crop, gl, r.text).toDataURL('image/png') };
+}
+
+function report(rows){
+  const el = document.createElement('div');
+  el.className = 'card';
+  el.innerHTML = `<h3>解碼結果（共 ${rows.length} 個條碼）</h3><table>
+    <tr><th>頁</th><th>條碼內容</th><th>格式</th><th>方向</th><th>切出字數</th>
+        <th>疊合對照（紅字＝條碼解出的內容）</th></tr>
+    ${rows.map(r => `<tr>
+      <td>${r.page}</td>
+      <td class="mono">${esc(r.text)}</td>
+      <td class="hint">${esc(String(r.format))}</td>
+      <td>${r.ang}°</td>
+      <td class="${r.glyphCount === r.text.length ? 'ok' : ''}">${r.glyphCount}
+        <span class="hint">/ ${r.text.length}</span></td>
+      <td><img src="${r.img}"></td></tr>`).join('')}
+  </table>
+  <div style="padding:12px 16px">
+    <div class="hint" style="margin-bottom:6px">拿去跟桌面版逐字比對用：</div>
+    <pre id="dump">${esc(rows.map(r => `${r.page}\t${r.text}\t${r.ang}°\t切字${r.glyphCount}`).join('\n'))}</pre>
+  </div>`;
+  out.appendChild(el);
+}
+
+window.__run = run;   // 給自動化測試用
+</script>
+</body>
+</html>
