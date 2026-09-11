@@ -33,10 +33,11 @@ export async function init(onProgress) {
   if (session) return;
   if (loading) return loading;
   loading = (async () => {
-    onProgress && onProgress('載入辨識模型（約 10MB，第一次之後瀏覽器會自己留著）…');
-    ort = await import('https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/ort.wasm.min.mjs');
-    ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/';
-    ort.env.wasm.numThreads = 1;
+    onProgress && onProgress('載入辨識模型與運算核心（第一次約 21MB，之後瀏覽器會自己留著）…');
+    // 一樣自己託管。注意要用 .mjs（ES module）——.js 是 UMD 版，沒有 ort.env 可以設。
+    ort = await import('../vendor/ort/ort.wasm.min.mjs');
+    ort.env.wasm.wasmPaths = new URL('../vendor/ort/', import.meta.url).href;
+    ort.env.wasm.numThreads = 1;     // GitHub Pages 設不了 COOP/COEP，沒有 SharedArrayBuffer
     const [s, txt] = await Promise.all([
       ort.InferenceSession.create(MODEL, { executionProviders: ['wasm'] }),
       fetch(KEYS).then(r => {

@@ -1,6 +1,6 @@
 // 主流程：把一份標籤稿從頭走到尾，產出每一列的判定與對照圖。
 // 四條軌：①條碼解碼（不經 OCR）②兩個解析度各一次 OCR ③字形群聚覆核 ④模板疊合比對（不經 OCR）。
-import { readBarcodes } from 'https://cdn.jsdelivr.net/npm/zxing-wasm@3.1.4/dist/es/reader/index.js';
+import { readBarcodes, prepareZXingModule } from '../vendor/zxing/es/reader/index.js';
 import { segmentGlyphs, ctx2d, newCanvas } from './imgproc.js';
 import * as ocr from './ocr.js';
 import { templateRead } from './template.js';
@@ -11,6 +11,15 @@ import { labelFrames, ownerLabel } from './frames.js';
 
 export const DPI = 400;              // 主要解析度（與桌面版相同）
 export const DPI_HI = 800;           // 第二次獨立判讀的解析度
+
+// zxing 的 wasm 預設會去 CDN 抓，改成抓自己 vendor 目錄裡那份
+prepareZXingModule({
+  overrides: {
+    locateFile: (path, prefix) => path.endsWith('.wasm')
+      ? new URL('../vendor/zxing/zxing_reader.wasm', import.meta.url).href
+      : prefix + path
+  }
+});
 
 const png = cv => cv.toDataURL('image/png');
 

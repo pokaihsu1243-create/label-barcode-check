@@ -1,9 +1,15 @@
 // PDF／影像輸入、幾何定位、轉正。幾何算式與桌面版 text_geom() 完全相同。
 import { newCanvas, ctx2d } from './imgproc.js';
 
-export const pdfjsLib = await import('https://cdn.jsdelivr.net/npm/pdfjs-dist@4.6.82/build/pdf.min.mjs');
+// 所有相依都放在 vendor/ 自己託管，不連 CDN：
+// 工廠的電腦可能在防火牆後面、或裝了擋外部網域的擴充套件，連得到 CDN 不能當作前提。
+// 而且這是「靜態 import」而不是頂層 await——頂層 await 會讓整個模組圖等在網路上，
+// 一旦取不到，import 這個模組的程式（包括介面的事件綁定）就完全不會執行。
+import * as pdfjs from '../vendor/pdfjs/pdf.min.mjs';
+
+export const pdfjsLib = pdfjs;
 pdfjsLib.GlobalWorkerOptions.workerSrc =
-  'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.6.82/build/pdf.worker.min.mjs';
+  new URL('../vendor/pdfjs/pdf.worker.min.mjs', import.meta.url).href;
 
 export async function openPdf(buf) {
   return pdfjsLib.getDocument({ data: buf }).promise;

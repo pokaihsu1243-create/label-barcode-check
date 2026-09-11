@@ -67,7 +67,7 @@ dialog::backdrop{background:rgba(15,23,42,.75)}
 
   <div id="drop">
     <div class="big">把標籤 PDF（或掃描／拍照的圖檔）拖到這裡</div>
-    <div class="sm">也可以點一下選檔　·　第一次開啟要下載約 10MB 的辨識模型，之後瀏覽器會自己留著</div>
+    <div class="sm">也可以點一下選檔　·　第一次開啟要下載約 24MB 的程式與辨識模型（之後瀏覽器會自己留著，不必再下載）</div>
   </div>
   <input id="picker" type="file" accept=".pdf,.png,.jpg,.jpeg,.webp" hidden>
 
@@ -83,25 +83,90 @@ dialog::backdrop{background:rgba(15,23,42,.75)}
 
 <dialog id="zoom"><img id="zoomimg" alt=""></dialog>
 
+<!--
+  這一段是「普通 script」，不是 module，而且刻意放在程式本體之前。
+  介面的事件綁定絕對不能排在任何 import 後面：module script 只要相依裡有一個載不到，
+  整段就不會執行，畫面看起來好好的，但點了沒反應、拖了也沒反應，而且完全不報錯。
+  （初版就是這樣寫的，踩過。）現在按鈕先能動，程式再慢慢載；載不到就講出來。
+-->
+<script>
+(function () {
+  var $ = function (s) { return document.querySelector(s); };
+  var drop = $('#drop'), picker = $('#picker'), status = $('#status');
+  var state = { ready: false, failed: null, queued: null, run: null };
+  window.__ui = state;
+
+  function say(html, bad) {
+    status.innerHTML = bad ? '<b style="color:#b00020">' + html + '</b>' : html;
+  }
+
+  function take(file) {
+    if (!file) return;
+    if (state.failed) { say(state.failed, true); return; }
+    if (!state.ready) {                       // 還在載：先收下，載完自動接著跑
+      state.queued = file;
+      say('程式還在載入中，收到「' + file.name + '」了，載完會自動開始…');
+      return;
+    }
+    state.run(file);
+  }
+  state.take = take;
+
+  drop.addEventListener('click', function () { picker.click(); });
+  picker.addEventListener('change', function (e) { take(e.target.files[0]); });
+  ['dragenter', 'dragover'].forEach(function (t) {
+    drop.addEventListener(t, function (e) { e.preventDefault(); drop.classList.add('hot'); });
+  });
+  ['dragleave', 'dragend'].forEach(function (t) {
+    drop.addEventListener(t, function (e) { e.preventDefault(); drop.classList.remove('hot'); });
+  });
+  drop.addEventListener('drop', function (e) {
+    e.preventDefault();
+    drop.classList.remove('hot');
+    take(e.dataTransfer.files[0]);
+  });
+  // 掉在框外面的話，瀏覽器預設會直接把 PDF 開起來、把這一頁蓋掉——擋掉並提示
+  window.addEventListener('dragover', function (e) { e.preventDefault(); });
+  window.addEventListener('drop', function (e) {
+    e.preventDefault();
+    if (!drop.contains(e.target)) say('請把檔案放在上面那個虛線框裡。');
+  });
+
+  $('#print').addEventListener('click', function () { window.print(); });
+  $('#zoom').addEventListener('click', function () { $('#zoom').close(); });
+  $('#out').addEventListener('click', function (e) {
+    if (e.target.tagName === 'IMG') { $('#zoomimg').src = e.target.src; $('#zoom').showModal(); }
+  });
+
+  say('載入中…');
+  // 載入本身失敗時要看得見。最常見的兩種：用 file:// 直接開檔（模組會被瀏覽器擋下），
+  // 以及網路／擴充套件把檔案擋掉。
+  state.fail = function (err) {
+    var msg = String((err && err.message) || err || '未知錯誤');
+    var hint = location.protocol === 'file:'
+      ? '這一頁不能用「直接開啟檔案」的方式跑（網址列是 file://）。請改用網址開啟，或在資料夾裡起一個本機伺服器。'
+      : '請確認網路正常；若瀏覽器裝了廣告攔截／安全性擴充套件，請對這個網站停用後重新整理。';
+    state.failed = '程式載入失敗：' + msg + '<br>' + hint;
+    say(state.failed, true);
+  };
+  window.addEventListener('error', function (e) {
+    if (!state.ready && e.target && e.target.tagName === 'SCRIPT') state.fail('指令碼載不到');
+  }, true);
+})();
+</script>
+
 <script type="module">
-import { check, DPI, DPI_HI } from './js/app.js';
+const ui = window.__ui;
+let check, DPI, DPI_HI;
+try {
+  ({ check, DPI, DPI_HI } = await import('./js/app.js'));
+} catch (err) {
+  ui.fail(err);
+  throw err;
+}
 
 const $ = s => document.querySelector(s);
-const drop = $('#drop'), picker = $('#picker'), out = $('#out'), status = $('#status');
-const zoom = $('#zoom'), zoomimg = $('#zoomimg');
-
-drop.onclick = () => picker.click();
-picker.onchange = e => e.target.files[0] && run(e.target.files[0]);
-['dragenter', 'dragover'].forEach(t =>
-  drop.addEventListener(t, e => { e.preventDefault(); drop.classList.add('hot'); }));
-['dragleave', 'drop'].forEach(t =>
-  drop.addEventListener(t, e => { e.preventDefault(); drop.classList.remove('hot'); }));
-drop.addEventListener('drop', e => e.dataTransfer.files[0] && run(e.dataTransfer.files[0]));
-$('#print').onclick = () => window.print();
-zoom.onclick = () => zoom.close();
-out.addEventListener('click', e => {
-  if (e.target.tagName === 'IMG') { zoomimg.src = e.target.src; zoom.showModal(); }
-});
+const out = $('#out'), status = $('#status');
 
 const esc = s => String(s ?? '').replace(/[&<>"]/g,
   c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -183,6 +248,16 @@ function report(res, name) {
       <img src="${ov.img}" alt="原圖對照"></div>`);
 
   out.innerHTML = html.join('');
+}
+
+// 到這裡才算真的可以用了。載入期間有人先丟了檔案的話，現在接著跑。
+ui.ready = true;
+ui.run = run;
+status.textContent = '就緒——把標籤稿拖進上面的框，或點一下選檔。';
+if (ui.queued) {
+  const f = ui.queued;
+  ui.queued = null;
+  run(f);
 }
 
 window.__check = check;      // 給自動化測試用
