@@ -161,7 +161,10 @@ export function finalize(r) {
   r.verdict = tx === bc ? 'OK' : 'NG';
   const low = r.score < MIN_SCORE
     ? `；OCR 信心 ${r.score.toFixed(2)} 偏低，但有不經 OCR 的模板疊合比對佐證` : '';
-  r.reason = tracks.map(t => t[0]).join('＋') + ' 全部一致' + low;
+  // NG 這句要講清楚「一致的是三條軌彼此」，不是「跟條碼一致」——
+  // 否則 NG 的列上寫著「全部一致」，一眼掃過去會誤以為沒事。
+  r.reason = tracks.map(t => t[0]).join('＋')
+    + (r.verdict === 'OK' ? ' 全部一致' : ' 讀出的印字一致，但與條碼不符') + low;
 }
 
 /** 疊合比對的結果寫成人看得懂的一句話（判定本身已在 finalize 用掉這條證據）。 */
