@@ -87,6 +87,30 @@ export function shapeRead(rows) {
 
 const pos1 = arr => arr.map(i => i + 1).join('、');
 
+/**
+ * 逐字列出「條碼」與「OCR」對不起來的位置。
+ *
+ * 這是**純敘述**，不參與判定：證據不足時判定仍然是待確認，不會因為這裡列出了差異
+ * 就改判 NG，也不會因為沒列出差異就改判 OK。目的只是讓人知道要去看哪一個字，
+ * 不必自己在 18 個數字裡用眼睛找。
+ */
+export function charMismatches(bc, ocr) {
+  bc = bc || '';
+  ocr = ocr || '';
+  const out = [];
+  for (let i = 0; i < Math.max(bc.length, ocr.length); i++) {
+    const a = i < bc.length ? bc[i] : null;
+    const b = i < ocr.length ? ocr[i] : null;
+    if (a !== b) out.push({ i, bc: a, ocr: b });
+  }
+  return out;
+}
+
+export function mismatchText(m) {
+  const show = v => v === null ? '（沒有這個字）' : v;
+  return `第 ${m.i + 1} 字：條碼為 ${show(m.bc)}，OCR 為 ${show(m.ocr)}`;
+}
+
 /** 定案。OK 只給有兩條互相獨立證據的列，其餘一律 CHECK 並寫明原因。 */
 export function finalize(r) {
   if (r.verdict === 'CHECK' && r.reason) return;      // 傾斜等前面已判定的情況

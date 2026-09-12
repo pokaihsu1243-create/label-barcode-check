@@ -172,6 +172,48 @@ export function segmentGlyphs(cv) {
 }
 
 /**
+ * 從切出來的一堆字裡挑出「條碼下方那一整行」。
+ *
+ * 為什麼需要這一步：文字常常比條碼圖案寬（QR 碼更明顯，它是方的，下面那行料號
+ * 動輒寬上好幾倍）。所以取文字區時要往左右多抓一些，但多抓就可能連到旁邊的東西。
+ * 這裡的做法是「先寬鬆地抓，再依實際的字把範圍收回來」：
+ *   ① 只留同一行的字（垂直中心相近的）
+ *   ② 沿著水平方向連成一串，字距太大就斷開——那是另一個區塊，不是同一串料號
+ *   ③ 取包含「條碼正下方」那一串；沒有就取最長的一串
+ *
+ * @param glyphs segmentGlyphs() 的結果
+ * @param centerX 條碼中心在這張裁切圖裡的 x（用來認哪一串才是「它自己的」那串）
+ */
+export function pickTextLine(glyphs, centerX) {
+  if (glyphs.length < 2) return glyphs;
+  const hs = glyphs.map(g => g.h).sort((a, b) => a - b);
+  const hm = hs[hs.length >> 1];
+  const cys = glyphs.map(g => g.y + g.h / 2).sort((a, b) => a - b);
+  const cy = cys[cys.length >> 1];
+  const line = glyphs.filter(g => Math.abs(g.y + g.h / 2 - cy) <= hm * 0.6)
+                     .sort((a, b) => a.x - b.x);
+  if (line.length < 2) return line;
+
+  // 字距超過 2 個字高就視為斷開。同一串料號裡就算有空格也不會到這麼寬，
+  // 但跨到另一個欄位／另一張標籤的間隔一定超過。
+  const runs = [[line[0]]];
+  for (let i = 1; i < line.length; i++) {
+    const prev = line[i - 1];
+    const gap = line[i].x - (prev.x + prev.w);
+    if (gap > hm * 2.0) runs.push([line[i]]);
+    else runs[runs.length - 1].push(line[i]);
+  }
+  if (centerX != null) {
+    const hit = runs.find(r => {
+      const a = r[0].x, b = r[r.length - 1].x + r[r.length - 1].w;
+      return centerX >= a - hm && centerX <= b + hm;
+    });
+    if (hit) return hit;
+  }
+  return runs.reduce((a, b) => (b.length > a.length ? b : a));
+}
+
+/**
  * 緊貼文字裁切。不這樣做的話，文字在 OCR 的 48px 輸入裡只佔一半高度，
  * CTC 會把相鄰相同的字（例如 77）併成一個——實測 277 被讀成 27。
  * 桌面版是靠 RapidOCR 內建的文字偵測自動達成同樣效果，這裡得自己來。

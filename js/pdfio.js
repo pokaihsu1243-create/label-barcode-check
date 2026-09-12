@@ -75,7 +75,9 @@ export function upright(src, ang) {
  * 這條邊代表條碼真正的閱讀方向。垂直方向必須由閱讀方向轉 90° 求得，
  * 不能直接拿 bottomLeft−topLeft——180° 的條碼會算到反邊，抓到隔壁標籤的字。
  */
-export function textGeom(pos, W, H) {
+export const SIDE_FACTOR = 1.5;   // 左右各往外抓幾倍的圖案寬度（見下方說明）
+
+export function textGeom(pos, W, H, clip) {
   const p = [pos.topLeft, pos.topRight, pos.bottomRight, pos.bottomLeft].map(q => [q.x, q.y]);
   const rx = p[1][0] - p[0][0], ry = p[1][1] - p[0][1];
   const rn = Math.hypot(rx, ry);
@@ -87,7 +89,10 @@ export function textGeom(pos, W, H) {
   const lo = a => Math.min(...a), hi = a => Math.max(...a);
   const width = hi(rp) - lo(rp), thick = hi(dp) - lo(dp);
   if (thick < 1) return { rect: null, ang: 0, skew: 99 };
-  const gap = thick * 0.05, ext = thick * 1.15, side = width * 0.06;
+  // 左右要抓得夠寬：印字常常比圖案寬，QR 碼尤其明顯（它是方的，下面那行料號
+  // 可以寬上好幾倍）。原本只往外抓 6%，寬印字的兩端會被切掉，OCR 只讀到中間一段，
+  // 正確的標籤因此被判成待確認。抓寬之後再靠 pickTextLine() 依實際的字收回來。
+  const gap = thick * 0.05, ext = thick * 1.15, side = width * SIDE_FACTOR;
   const corners = [];
   for (const a of [lo(rp) - side, hi(rp) + side])
     for (const b of [hi(dp) + gap, hi(dp) + gap + ext])
@@ -95,12 +100,38 @@ export function textGeom(pos, W, H) {
   const xs = corners.map(c => c[0]), ys = corners.map(c => c[1]);
   const ang = Math.atan2(r[1], r[0]) * 180 / Math.PI;
   const snapped = Math.round(ang / 90) * 90;
+
+  // 抓寬了就一定要有界線，否則會吃到隔壁標籤。clip 是呼叫端給的：
+  // 有標籤外框就用外框，沒有就用「與最近的鄰居條碼的中線」。
+  let x0 = Math.max(0, lo(xs)), y0 = Math.max(0, lo(ys));
+  let x1 = Math.min(W, hi(xs)), y1 = Math.min(H, hi(ys));
+  if (clip) {
+    x0 = Math.max(x0, clip[0]); y0 = Math.max(y0, clip[1]);
+    x1 = Math.min(x1, clip[2]); y1 = Math.min(y1, clip[3]);
+  }
+  if (x1 - x0 < 2 || y1 - y0 < 2) return { rect: null, ang: snapped, skew: 99 };
+  const centre = [(lo(rp) + hi(rp)) / 2 * r[0] + ((hi(dp) + lo(dp)) / 2) * d[0],
+                  (lo(rp) + hi(rp)) / 2 * r[1] + ((hi(dp) + lo(dp)) / 2) * d[1]];
   return {
-    rect: [Math.max(0, lo(xs)), Math.max(0, lo(ys)), Math.min(W, hi(xs)), Math.min(H, hi(ys))],
+    rect: [x0, y0, x1, y1],
     ang: snapped,
     skew: Math.abs(ang - snapped),
+    centre,                                      // 條碼中心（頁面座標），用來認「自己那一行字」
     bbox: [lo(p.map(q => q[0])), lo(p.map(q => q[1])), hi(p.map(q => q[0])), hi(p.map(q => q[1]))]
   };
+}
+
+/**
+ * 把頁面座標的點換算成「裁切並轉正之後」那張圖裡的 x。
+ * pickTextLine 要靠它才知道哪一串字在條碼正下方。
+ */
+export function pageXInCrop(px, rect, ang) {
+  const a = ((Math.round(ang) % 360) + 360) % 360;
+  const [x0, y0, x1, y1] = rect;
+  if (a === 0) return px[0] - x0;
+  if (a === 180) return x1 - px[0];
+  if (a === 90) return px[1] - y0;              // 轉正後的 x 來自原本的 y
+  return y1 - px[1];                            // 270
 }
 
 /**

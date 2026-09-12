@@ -60,6 +60,21 @@ dialog::backdrop{background:rgba(15,23,42,.75)}
 .fail p{margin:0}
 .fail code{background:#fff;border:1px solid #f0cccc;border-radius:4px;padding:1px 5px;font-size:13px}
 .fail a{color:#1f3a5f}
+.mm{margin-top:6px;background:#fff7e6;border:1px solid #ffd591;border-radius:6px;padding:6px 9px}
+.mm-h{font-weight:700;color:#ad6800;margin-bottom:2px}
+.mm ul{margin:0;padding-left:18px}
+.mm li{margin:1px 0}
+.mm b{font-family:Consolas,monospace;color:#b00020}
+.rt{margin-top:6px;border:1px solid #e2e8f0;border-radius:6px;padding:5px 9px;background:#fbfcfd}
+.rt summary{cursor:pointer;font-weight:700;color:#1f3a5f}
+.rt ul{margin:5px 0;padding-left:18px}
+.rt .bad2{color:#b00020;font-weight:700}
+.rt-t{width:auto;margin:4px 0}
+.rt-t th,.rt-t td{border:1px solid #e8edf3;padding:2px 7px;font-size:12px;white-space:nowrap}
+/* 改了預期數量之後，舊的結果就不再對應這個數字了——蓋一條醒目的提示上去 */
+.stale{background:#fff4e0;border:2px solid #e69100;border-radius:10px;padding:12px 16px;margin:14px 0;
+       font-size:15px;font-weight:700;color:#ad6800}
+.stale span{display:block;font-size:13px;font-weight:400;color:#7a5200;margin-top:3px}
 /* 列印＝存成 PDF。版面刻意做成與桌面版報告相同：A4 橫式、表格縮排、圖縮小，
    讓「另存為 PDF」拿到的檔案跟桌面版自動產出的那份等價。 */
 @media print{
@@ -221,17 +236,93 @@ function diff(a, b) {
 
 const TAG = { OK: ['t-ok', 'OK'], NG: ['t-ng', 'NG'], NOTEXT: ['t-ck', '讀不到字'] };
 
+/**
+ * 疑似錯字：逐字指出條碼與 OCR 對不起來的位置。
+ * 待確認的列也要列——那才是最需要人去看的一種，總不能叫人自己在 18 個數字裡找。
+ * 這只是敘述，不改變判定。
+ */
+function mismatchBlock(r) {
+  const m = r.mismatches || [];
+  if (!m.length) return '';
+  const show = v => v === null ? '（沒有這個字）' : esc(v);
+  const lines = m.map(x => `<li>第 <b>${x.i + 1}</b> 字：條碼為 <b>${show(x.bc)}</b>，OCR 為 <b>${show(x.ocr)}</b></li>`);
+  const head = r.verdict === 'NG' ? '不符的字' : '疑似不符的字（僅供人工核對，判定未因此改變）';
+  return `<div class="mm"><div class="mm-h">⚑ ${head}</div><ul>${lines.join('')}</ul></div>`;
+}
+
+/** 800dpi 重試紀錄：重試前後各讀到什麼、補了哪幾個字、哪裡衝突、最後依據什麼定案。 */
+function retryBlock(r) {
+  const t = r.retry;
+  if (!t) return '';
+  const pos = a => (a || []).map(i => i + 1).join('、');
+  const line = (d, tpl) => `<tr><td>${d.dpi} dpi</td><td class="mono">${esc(d.ocr) || '—'}</td>`
+    + `<td>${d.score.toFixed(2)}</td><td class="mono">${esc(tpl) || '—'}</td><td>${d.glyphs}</td></tr>`;
+  const bits = [];
+  if (t.filled && t.filled.length)
+    bits.push(`<li>由 ${t.hi.dpi} dpi 補上判讀的字：第 ${pos(t.filled)} 字</li>`);
+  if (t.conflict && t.conflict.length)
+    bits.push(`<li class="bad2">兩個解析度讀出不同的字：第 ${pos(t.conflict)} 字 → 一律保留待確認，不挑一個用</li>`);
+  if (!t.hiReal)
+    bits.push('<li>輸入是影像，' + t.hi.dpi + ' dpi 只是內插放大、沒有新資訊，<b>不得用來把待確認升級為 OK</b></li>');
+  if (!bits.length) bits.push('<li>兩個解析度結果一致，無需補字</li>');
+  return `<details class="rt"><summary>重試紀錄（${t.lo.dpi}／${t.hi.dpi} dpi）</summary>
+    <div class="hint" style="margin:4px 0">政策：${esc(t.policy)}——不是「讀不清楚才重試」。
+      只在讀不清楚時才複查，等於只在對自己有利時才複查。</div>
+    <table class="rt-t"><tr><th>解析度</th><th>OCR 讀到</th><th>信心</th><th>模板比對</th><th>切出字數</th></tr>
+      ${line(t.lo, t.tplLo)}${line(t.hi, t.tplHi)}</table>
+    <ul>${bits.join('')}</ul>
+    <div>判定依據：<b>${esc(t.verdict)}</b>——${esc(t.basis)}</div>
+  </details>`;
+}
+
+// 目前畫面上這份結果是用哪個「應有總數」跑出來的。改了數字就要提醒重跑，
+// 否則很容易把「上一個數量下判出來的可以放行」誤當成新數量的結論。
+let shown = null;
+let lastFile = null;
+
+function markStale() {
+  if (!shown) return;
+  const now = parseInt($('#expect').value, 10);
+  const cur = Number.isInteger(now) && now > 0 ? now : null;
+  const old = document.querySelector('.stale');
+  const verdict = out.querySelector('.verdict');
+  if (cur === shown.expect) {           // 改回原本的數字＝這份結果又對得上了，提示就該收掉
+    if (old) old.remove();
+    if (verdict) verdict.style.opacity = '';
+    return;
+  }
+  const before = shown.expect === null ? '（未填）' : shown.expect;
+  const after = cur === null ? '（未填）' : cur;
+  const body = `⚠ 數量已變更（${before} → ${after}），請重新核對
+    <span>下面這份結果是用「${before}」跑出來的，<b>還沒有套用新的數量</b>，先別當成新數量下的結論。
+    <button id="redo" style="margin-top:8px">用新的數量重新核對</button></span>`;
+  if (old) old.innerHTML = body;
+  else {
+    const box = document.createElement('div');
+    box.className = 'stale';
+    box.innerHTML = body;
+    out.insertBefore(box, out.firstChild);
+  }
+  if (verdict) verdict.style.opacity = '.45';
+  $('#redo').addEventListener('click', () => { if (lastFile) run(lastFile); });
+}
+$('#expect').addEventListener('input', markStale);
+
 let busy = false;
 async function run(file) {
   if (busy) return;
   busy = true;
+  lastFile = file;
+  shown = null;
   out.innerHTML = '';
   $('#print').hidden = true;
   const expect = parseInt($('#expect').value, 10);
   try {
     const t0 = performance.now();
-    const res = await check(file, Number.isInteger(expect) && expect > 0 ? expect : null,
+    const used = Number.isInteger(expect) && expect > 0 ? expect : null;
+    const res = await check(file, used,
                             m => { status.textContent = m; });
+    shown = { expect: used, name: file.name };
     status.textContent = `完成：共 ${res.rows.length} 個條碼，字形覆核分出 ${res.nclu} 種字形，`
       + `耗時 ${((performance.now() - t0) / 1000).toFixed(1)} 秒`;
     report(res, file.name);
@@ -268,7 +359,7 @@ function report(res, name) {
       <td class="mono">${diff(r.bc, r.ocr)}</td>
       <td class="mono">${diff(r.ocr, r.bc)}<div class="hint">信心 ${r.score.toFixed(2)}</div></td>
       <td><span class="tag ${cls}">${label}</span></td>
-      <td class="why">${esc(r.reason)}${note}</td>
+      <td class="why">${esc(r.reason)}${note}${mismatchBlock(r)}${retryBlock(r)}</td>
       <td>${r.img ? `<img src="${r.img}" alt="原圖">` : ''}</td>
       <td class="cmp">${r.cmp ? `<img src="${r.cmp}" alt="疊合對照">` : '<span class="hint">—</span>'}</td>
     </tr>`);

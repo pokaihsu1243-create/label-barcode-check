@@ -1,10 +1,10 @@
 // 主流程：把一份標籤稿從頭走到尾，產出每一列的判定與對照圖。
 // 四條軌：①條碼解碼（不經 OCR）②兩個解析度各一次 OCR ③字形群聚覆核 ④模板疊合比對（不經 OCR）。
 import { readBarcodes, prepareZXingModule } from '../vendor/zxing/es/reader/index.js';
-import { segmentGlyphs, ctx2d, newCanvas } from './imgproc.js';
+import { segmentGlyphs, pickTextLine, ctx2d, newCanvas } from './imgproc.js';
 import * as ocr from './ocr.js';
 import { templateRead } from './template.js';
-import { shapeRead, finalize, tplNote, MAX_SKEW } from './verdict.js';
+import { shapeRead, finalize, tplNote, charMismatches, MAX_SKEW } from './verdict.js';
 import { compareImage, overviewImage } from './overlay.js';
 import * as io from './pdfio.js';
 import { labelFrames, ownerLabel } from './frames.js';
@@ -23,6 +23,31 @@ prepareZXingModule({
 });
 
 const png = cv => cv.toDataURL('image/png');
+
+/**
+ * 文字區可以往左右抓多寬的界線。抓寬是為了容納「比圖案還寬的印字」，
+ * 但抓寬就必須有界線，否則會吃到隔壁標籤的字。
+ * 界線優先用標籤外框；沒有外框（照片、TIFF）就退回「與最近鄰居的中線」。
+ */
+function clipFor(it, items, frames, W, H) {
+  if (it.label >= 0 && frames[it.label]) return frames[it.label].slice();
+  const [bx0, by0, bx1, by1] = it.bbox;
+  const cx = (bx0 + bx1) / 2, cy = (by0 + by1) / 2;
+  let left = 0, right = W, top = 0, bottom = H;
+  for (const o of items) {
+    if (o === it) continue;
+    const ox = (o.bbox[0] + o.bbox[2]) / 2, oy = (o.bbox[1] + o.bbox[3]) / 2;
+    const dx = Math.abs(ox - cx), dy = Math.abs(oy - cy);
+    if (dx > dy) {                                   // 左右鄰居：切在兩者中線
+      if (ox < cx) left = Math.max(left, (ox + cx) / 2);
+      else right = Math.min(right, (ox + cx) / 2);
+    } else {                                         // 上下鄰居
+      if (oy < cy) top = Math.max(top, (oy + cy) / 2);
+      else bottom = Math.min(bottom, (oy + cy) / 2);
+    }
+  }
+  return [left, top, right, bottom];
+}
 
 /** 整份檔的結論與燈號。放行只給「乾淨且總數已核對」。 */
 export function summarize(rows, warns, counted) {
@@ -79,12 +104,13 @@ export async function check(file, expectTotal, progress) {
     const frames = pg.page ? await labelFrames(pg.page, DPI) : [];
     items.forEach(it => { it.label = ownerLabel(it.bbox, frames); });
     items.sort((a, b) => a.label - b.label || a.bbox[1] - b.bbox[1] || a.bbox[0] - b.bbox[0]);
+    items.forEach(it => { it.clip = clipFor(it, items, frames, W, H); });
 
     const pageRows = [];
     for (let i = 0; i < items.length; i++) {
       say(`第 ${pg.no} 頁：辨識第 ${i + 1}/${items.length} 個條碼…`);
-      const { r, bbox, label } = items[i];
-      const g = io.textGeom(r.position, W, H);
+      const { r, bbox, label, clip } = items[i];
+      const g = io.textGeom(r.position, W, H, clip);
       const row = {
         page: pg.no, label: label + 1, fmt: String(r.format),
         bc: ocr.norm(r.text), bcRaw: r.text, orient: ((g.ang % 360) + 360) % 360, skew: g.skew,
@@ -94,14 +120,17 @@ export async function check(file, expectTotal, progress) {
       };
 
       if (!g.rect || g.skew > MAX_SKEW) {
-        row.reason = `條碼傾斜 ${g.skew.toFixed(1)}°，無法可靠對位`;
+        row.reason = g.rect ? `條碼傾斜 ${g.skew.toFixed(1)}°，無法可靠對位`
+                            : '找不到條碼下方的文字區（可能被裁切或壓在邊界上）';
         row.img = png(io.cropCanvas(pg.cv, bbox));
         rows.push(row); pageRows.push(row);
         continue;
       }
 
       const crop = io.upright(io.cropCanvas(pg.cv, g.rect), g.ang);
-      const glyphs = segmentGlyphs(crop);
+      // 文字區是刻意抓寬的（印字可能比圖案寬），這裡再依實際切出來的字收成「一整行」
+      const cxInCrop = io.pageXInCrop(g.centre, g.rect, g.ang);
+      const glyphs = pickTextLine(segmentGlyphs(crop), cxInCrop);
       row.glyphs = glyphs;
 
       // 文字層只當輔助：隱藏文字、被蓋住的文字都抽得出來，不能代替實際印字
@@ -114,12 +143,22 @@ export async function check(file, expectTotal, progress) {
       const cropHi = hiReal
         ? io.upright(await io.renderRegion(pg.page, DPI_HI, g.rect, DPI), g.ang)
         : io.upscale(crop, 2);
-      const glyphsHi = segmentGlyphs(cropHi);
+      const glyphsHi = pickTextLine(segmentGlyphs(cropHi),
+                                   io.pageXInCrop(g.centre, g.rect, g.ang) * (DPI_HI / DPI));
       const b = await ocr.recognize(cropHi, glyphsHi);
       row.raw = a.raw;
       row.ocr = a.text;
       row.ocr2 = b.text;
       row.score = Math.min(a.score, b.score);
+      // 重試紀錄：兩個解析度**一律都跑**，不是「讀不清楚才重試」。
+      // 只在讀不清楚時才重試的話，400dpi 讀錯但讀得很完整的那種列永遠不會被複查，
+      // 等於只在對自己有利的時候才複查——那是確認偏誤，不是驗證。
+      row.retry = {
+        policy: '兩個解析度一律各獨立判讀一次',
+        hiReal,                                   // false＝輸入是影像，800dpi 只是內插放大
+        lo: { dpi: DPI, ocr: a.text, score: a.score, glyphs: glyphs.length },
+        hi: { dpi: DPI_HI, ocr: b.text, score: b.score, glyphs: glyphsHi.length }
+      };
       row._crop = crop;
       row._glyphsHi = glyphsHi;
       row._hiReal = hiReal;
@@ -190,6 +229,17 @@ export async function check(file, expectTotal, progress) {
     }
     finalize(r);
     r.tplNote = tplNote(r);
+    // 疑似錯字：不論判定是什麼都列出來（待確認的列尤其需要，人才知道要看哪一個字）。
+    // 這只是敘述，不會改變判定。
+    r.mismatches = charMismatches(r.bc, r.ocr);
+    if (r.retry) {
+      r.retry.tplLo = r.tplLo;
+      r.retry.tplHi = r.tplHi;
+      r.retry.filled = r.tplFilled;               // 由 800dpi 補上的字位
+      r.retry.conflict = r.tplResConflict;        // 兩解析度讀出不同字的字位
+      r.retry.basis = r.reason;                   // 最後是依據什麼定案的
+      r.retry.verdict = r.verdict;
+    }
     if (r._crop && gl.length) {
       const im = compareImage(r._crop, gl, r.bc, r.ocr, r.glyphLabels || [], r.tpl, r.tplBad);
       if (im) r.cmp = png(im);
