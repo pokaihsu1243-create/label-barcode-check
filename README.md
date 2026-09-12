@@ -115,7 +115,7 @@ verify-geometry.html  早期的可行性驗證頁，保留當紀錄
 
 ## 與桌面版的關係
 
-桌面版（Python + RapidOCR + zxing-cpp）是本工具的來源，兩者用**同一個** PP-OCRv3 模型與
+桌面版（Python + RapidOCR + zxing-cpp）是本工具的來源——原始碼在 <https://github.com/pokaihsu1243-create/label-barcode-check-desktop>，兩者用**同一個** PP-OCRv3 模型與
 **同一個** zxing 引擎，判定規則與門檻也是照著移植的。在實稿上兩邊逐字比對過：
 條碼內容、OCR 結果、字形覆核、模板比對、判定結果、標籤分組全部一致。
 
