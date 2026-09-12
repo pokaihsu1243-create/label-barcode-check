@@ -88,27 +88,89 @@ export function shapeRead(rows) {
 const pos1 = arr => arr.map(i => i + 1).join('、');
 
 /**
- * 逐字列出「條碼」與「OCR」對不起來的位置。
+ * 編輯距離對齊（Needleman–Wunsch，等權重）。
+ * 回傳每一步是「相同／換成別的字／OCR 缺字／OCR 多字」。
+ */
+function editOps(a, b) {
+  const n = a.length, m = b.length;
+  const D = [];
+  for (let i = 0; i <= n; i++) {
+    D.push(new Int32Array(m + 1));
+    D[i][0] = i;
+  }
+  for (let j = 0; j <= m; j++) D[0][j] = j;
+  for (let i = 1; i <= n; i++)
+    for (let j = 1; j <= m; j++)
+      D[i][j] = Math.min(D[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
+                         D[i - 1][j] + 1,
+                         D[i][j - 1] + 1);
+  const ops = [];
+  let i = n, j = m;
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && D[i][j] === D[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)) {
+      ops.push({ kind: a[i - 1] === b[j - 1] ? 'same' : 'sub', i: i - 1, bc: a[i - 1], ocr: b[j - 1] });
+      i--; j--;
+    } else if (i > 0 && D[i][j] === D[i - 1][j] + 1) {
+      ops.push({ kind: 'del', i: i - 1, bc: a[i - 1], ocr: null });   // 條碼有這個字，OCR 沒讀到
+      i--;
+    } else {
+      ops.push({ kind: 'ins', i, bc: null, ocr: b[j - 1] });          // OCR 多出一個字
+      j--;
+    }
+  }
+  return { dist: D[n][m], ops: ops.reverse() };
+}
+
+/**
+ * 逐字列出「條碼」與「OCR」對不起來的地方。
  *
- * 這是**純敘述**，不參與判定：證據不足時判定仍然是待確認，不會因為這裡列出了差異
- * 就改判 NG，也不會因為沒列出差異就改判 OK。目的只是讓人知道要去看哪一個字，
- * 不必自己在 18 個數字裡用眼睛找。
+ * **字數不同時一定要先對齊再比**：OCR 只要漏掉開頭一個字，逐位比對就會讓後面
+ * 每一個字都錯位，變成列出一整排根本不存在的「錯字」，反而害人找錯地方。
+ *
+ * 對齊只用於顯示：**不會去補改 OCR 原文，也不參與判定**。證據不足時判定仍是
+ * 待確認，不會因為這裡列出（或沒列出）差異就變成 OK 或 NG。
+ *
+ * 對齊本身不唯一時（例如缺的那個字夾在一串相同的字裡，分不出是哪一個被漏掉，
+ * 或是兩邊差太多根本對不起來），就不硬指位置，改成請人工確認。
  */
 export function charMismatches(bc, ocr) {
   bc = bc || '';
   ocr = ocr || '';
-  const out = [];
-  for (let i = 0; i < Math.max(bc.length, ocr.length); i++) {
-    const a = i < bc.length ? bc[i] : null;
-    const b = i < ocr.length ? ocr[i] : null;
-    if (a !== b) out.push({ i, bc: a, ocr: b });
+  if (bc === ocr) return { count: 0, items: [], unclear: false, lenNote: '' };
+
+  const lenNote = bc.length === ocr.length ? ''
+    : `OCR 比條碼${ocr.length < bc.length ? '少' : '多'} ${Math.abs(bc.length - ocr.length)} 個字`
+      + `（條碼 ${bc.length} 字／OCR ${ocr.length} 字）`;
+
+  if (bc.length === ocr.length) {              // 字數相同：逐位比對本來就沒有歧義
+    const items = [];
+    for (let i = 0; i < bc.length; i++)
+      if (bc[i] !== ocr[i]) items.push({ kind: 'sub', i, bc: bc[i], ocr: ocr[i] });
+    return { count: items.length, items, unclear: false, lenNote };
   }
-  return out;
+
+  const { dist, ops } = editOps(bc, ocr);
+  const items = ops.filter(o => o.kind !== 'same');
+
+  // 差太多就別硬對——對出來的位置沒有意義，講「請人工確認」還比較誠實
+  const tooFar = dist > Math.max(3, Math.ceil(bc.length * 0.4));
+  // 缺字／多字若落在一串相同的字裡，滑一格也是同樣的距離，位置就不唯一
+  const slippery = items.some(o => {
+    if (o.kind === 'sub') return false;
+    const s = o.kind === 'del' ? bc : ocr;
+    const k = o.kind === 'del' ? o.i : ocr.indexOf(o.ocr, Math.max(0, o.i - 1));
+    return (k > 0 && s[k - 1] === s[k]) || (k >= 0 && k + 1 < s.length && s[k + 1] === s[k]);
+  });
+  const unclear = tooFar || slippery;
+  return { count: items.length, items: unclear ? [] : items, unclear, lenNote, dist };
 }
 
 export function mismatchText(m) {
-  const show = v => v === null ? '（沒有這個字）' : v;
-  return `第 ${m.i + 1} 字：條碼為 ${show(m.bc)}，OCR 為 ${show(m.ocr)}`;
+  const n = m.i + 1;
+  if (m.kind === 'del') return `第 ${n} 字：條碼為 ${m.bc}，OCR 沒讀到這個字`;
+  if (m.kind === 'ins') return m.i === 0 ? `開頭：OCR 多出一個 ${m.ocr}`
+                                         : `第 ${m.i} 字之後：OCR 多出一個 ${m.ocr}`;
+  return `第 ${n} 字：條碼為 ${m.bc}，OCR 為 ${m.ocr}`;
 }
 
 /** 定案。OK 只給有兩條互相獨立證據的列，其餘一律 CHECK 並寫明原因。 */

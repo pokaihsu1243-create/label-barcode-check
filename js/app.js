@@ -49,6 +49,51 @@ function clipFor(it, items, frames, W, H) {
   return [left, top, right, bottom];
 }
 
+/**
+ * 重試紀錄裡的一致性說明。三件事**分開講**，不可以混成一句「結果一致」：
+ *   ① 兩次 OCR 是否讀到相同的字串
+ *   ② 模板疊合比對這一軌是否真的可用（有沒有跑、有沒有字分不出來、兩解析度有沒有衝突）
+ *   ③ 有沒有哪幾個字是靠 800dpi 才補上的
+ * 之前只看「有沒有補字／有沒有衝突」，兩者都沒有就印「兩個解析度結果一致」——
+ * 但模板比對根本沒跑時這兩個當然都是空的，於是兩次 OCR 明明不一樣也會被說成一致。
+ */
+export function retryChecks(r) {
+  const t = r.retry;
+  const pos = a => (a || []).map(i => i + 1).join('、');
+  const out = [];
+
+  if (!t.hi.ocr) out.push({ ok: false, label: 'OCR 一致性', text: `${t.hi.dpi} dpi 讀不到文字，無法完成雙次核對` });
+  else if (t.lo.ocr === t.hi.ocr) out.push({ ok: true, label: 'OCR 一致性', text: '兩次 OCR 讀到相同結果' });
+  else out.push({ ok: false, label: 'OCR 一致性',
+                  text: `兩次 OCR 讀到不同結果（${t.lo.dpi}dpi=${t.lo.ocr}／${t.hi.dpi}dpi=${t.hi.ocr}）`
+                        + '——不足以放行，保留待確認' });
+
+  const nglyph = r.glyphs ? r.glyphs.length : t.lo.glyphs;
+  if (!r.tpl)
+    out.push({ ok: false, label: '模板疊合比對',
+               text: `未執行：切出 ${nglyph} 個字、條碼是 ${r.bc.length} 個字，數量對不上就無法逐字比形狀` });
+  else if (t.conflict && t.conflict.length)
+    out.push({ ok: false, label: '模板疊合比對',
+               text: `兩個解析度讀出不同的字：第 ${pos(t.conflict)} 字——一律保留待確認，不挑一個用` });
+  else if (r.tpl.includes('?'))
+    out.push({ ok: false, label: '模板疊合比對',
+               text: `${[...r.tpl].filter(c => c === '?').length} 個字形狀分不出來（第 `
+                     + pos([...r.tpl].map((c, i) => c === '?' ? i : -1).filter(i => i >= 0))
+                     + ' 字），這幾個字沒有被這一軌覆核到' });
+  else
+    out.push({ ok: true, label: '模板疊合比對', text: `${r.tpl.length} 個字全部辨識出來（這一軌不經 OCR）` });
+
+  if (t.filled && t.filled.length)
+    out.push({ ok: true, label: `${t.hi.dpi} dpi 補足`, text: `第 ${pos(t.filled)} 字是靠 ${t.hi.dpi} dpi 才判讀出來的` });
+  else if (r.tpl)
+    out.push({ ok: true, label: `${t.hi.dpi} dpi 補足`, text: `沒有需要補的字（${t.lo.dpi} dpi 就已辨識完整）` });
+
+  if (!t.hiReal)
+    out.push({ ok: false, label: '證據效力',
+               text: `輸入是影像，${t.hi.dpi} dpi 只是內插放大、沒有新資訊，不得用來把待確認升級為 OK` });
+  return out;
+}
+
 /** 整份檔的結論與燈號。放行只給「乾淨且總數已核對」。 */
 export function summarize(rows, warns, counted) {
   const ng = rows.filter(r => r.verdict === 'NG').length;
@@ -239,6 +284,7 @@ export async function check(file, expectTotal, progress) {
       r.retry.conflict = r.tplResConflict;        // 兩解析度讀出不同字的字位
       r.retry.basis = r.reason;                   // 最後是依據什麼定案的
       r.retry.verdict = r.verdict;
+      r.retry.checks = retryChecks(r);
     }
     if (r._crop && gl.length) {
       const im = compareImage(r._crop, gl, r.bc, r.ocr, r.glyphLabels || [], r.tpl, r.tplBad);

@@ -65,6 +65,8 @@ dialog::backdrop{background:rgba(15,23,42,.75)}
 .mm ul{margin:0;padding-left:18px}
 .mm li{margin:1px 0}
 .mm b{font-family:Consolas,monospace;color:#b00020}
+.mm-len{color:#7a5200;margin-bottom:2px}
+.mm-raw{margin-top:4px;font-family:Consolas,monospace;font-size:12px;color:#475569}
 .rt{margin-top:6px;border:1px solid #e2e8f0;border-radius:6px;padding:5px 9px;background:#fbfcfd}
 .rt summary{cursor:pointer;font-weight:700;color:#1f3a5f}
 .rt ul{margin:5px 0;padding-left:18px}
@@ -209,9 +211,10 @@ dialog::backdrop{background:rgba(15,23,42,.75)}
 
 <script type="module">
 const ui = window.__ui;
-let check, DPI, DPI_HI;
+let check, DPI, DPI_HI, mismatchText;
 try {
   ({ check, DPI, DPI_HI } = await import('./js/app.js'));
+  ({ mismatchText } = await import('./js/verdict.js'));
 } catch (err) {
   ui.fail(err);
   throw err;
@@ -242,12 +245,17 @@ const TAG = { OK: ['t-ok', 'OK'], NG: ['t-ng', 'NG'], NOTEXT: ['t-ck', '讀不�
  * 這只是敘述，不改變判定。
  */
 function mismatchBlock(r) {
-  const m = r.mismatches || [];
-  if (!m.length) return '';
-  const show = v => v === null ? '（沒有這個字）' : esc(v);
-  const lines = m.map(x => `<li>第 <b>${x.i + 1}</b> 字：條碼為 <b>${show(x.bc)}</b>，OCR 為 <b>${show(x.ocr)}</b></li>`);
+  const m = r.mismatches;
+  if (!m || (!m.count && !m.unclear)) return '';
   const head = r.verdict === 'NG' ? '不符的字' : '疑似不符的字（僅供人工核對，判定未因此改變）';
-  return `<div class="mm"><div class="mm-h">⚑ ${head}</div><ul>${lines.join('')}</ul></div>`;
+  const len = m.lenNote ? `<div class="mm-len">${esc(m.lenNote)}</div>` : '';
+  if (m.unclear)
+    return `<div class="mm"><div class="mm-h">⚑ ${head}</div>${len}
+      <div>字數不同，位置可能偏移，<b>請人工確認</b>——對不出唯一的對應關係時就不指認字位，
+      免得指錯地方害你找錯字。</div>
+      <div class="mm-raw">條碼：<b>${esc(r.bc)}</b><br>OCR：<b>${esc(r.ocr)}</b></div></div>`;
+  const lines = m.items.map(x => `<li>${esc(mismatchText(x))}</li>`);
+  return `<div class="mm"><div class="mm-h">⚑ ${head}</div>${len}<ul>${lines.join('')}</ul></div>`;
 }
 
 /** 800dpi 重試紀錄：重試前後各讀到什麼、補了哪幾個字、哪裡衝突、最後依據什麼定案。 */
@@ -257,14 +265,10 @@ function retryBlock(r) {
   const pos = a => (a || []).map(i => i + 1).join('、');
   const line = (d, tpl) => `<tr><td>${d.dpi} dpi</td><td class="mono">${esc(d.ocr) || '—'}</td>`
     + `<td>${d.score.toFixed(2)}</td><td class="mono">${esc(tpl) || '—'}</td><td>${d.glyphs}</td></tr>`;
-  const bits = [];
-  if (t.filled && t.filled.length)
-    bits.push(`<li>由 ${t.hi.dpi} dpi 補上判讀的字：第 ${pos(t.filled)} 字</li>`);
-  if (t.conflict && t.conflict.length)
-    bits.push(`<li class="bad2">兩個解析度讀出不同的字：第 ${pos(t.conflict)} 字 → 一律保留待確認，不挑一個用</li>`);
-  if (!t.hiReal)
-    bits.push('<li>輸入是影像，' + t.hi.dpi + ' dpi 只是內插放大、沒有新資訊，<b>不得用來把待確認升級為 OK</b></li>');
-  if (!bits.length) bits.push('<li>兩個解析度結果一致，無需補字</li>');
+  // 三件事分開講：OCR 是否一致／模板是否可用／有沒有靠 800dpi 補字。
+  // 絕不把它們混成一句「結果一致」——那會在證據其實不足時給出安心的假象。
+  const bits = (t.checks || []).map(c =>
+    `<li class="${c.ok ? '' : 'bad2'}"><b>${esc(c.label)}：</b>${esc(c.text)}</li>`);
   return `<details class="rt"><summary>重試紀錄（${t.lo.dpi}／${t.hi.dpi} dpi）</summary>
     <div class="hint" style="margin:4px 0">政策：${esc(t.policy)}——不是「讀不清楚才重試」。
       只在讀不清楚時才複查，等於只在對自己有利時才複查。</div>
