@@ -84,7 +84,36 @@ dialog::backdrop{background:rgba(15,23,42,.75)}
 #fontwarn .sub{display:block;font-size:13px;color:#5f2a2a;margin-top:4px}
 /* 列印＝存成 PDF。版面刻意做成與桌面版報告相同：A4 橫式、表格縮排、圖縮小，
    讓「另存為 PDF」拿到的檔案跟桌面版自動產出的那份等價。 */
+/* 版本號與更新紀錄 */
+.ver{font-size:12.5px;font-weight:400;background:rgba(255,255,255,.16);border-radius:20px;padding:2px 10px;
+     margin-left:8px;vertical-align:2px;white-space:nowrap}
+/* 更新紀錄跟左邊（拖放框＋數量列）等高、內容多就在框內捲動——不要比左邊高，
+   否則會把下方的檢查結果往下推，中間空一大塊。contain:size 讓它的內容不去撐高這一列。 */
+.top{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:18px;align-items:stretch}
+@media (max-width:1050px){.top{grid-template-columns:minmax(0,1fr)}.log{contain:none!important;max-height:300px}}
+.log{background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px 14px;font-size:13px;
+     contain:size;min-height:230px;overflow:auto}
+.log h3{margin:0 0 8px;font-size:14.5px;display:flex;align-items:center;gap:8px}
+.log .fresh{background:#e7f7ec;border:1px solid #86d79b;color:#0a7d32;border-radius:8px;padding:6px 9px;
+            margin:0 0 8px;font-weight:700}
+.log details{border-top:1px solid #eef2f6;padding:6px 0}
+.log details:first-of-type{border-top:0}
+.log summary{cursor:pointer;font-weight:700;color:#1f3a5f}
+.log summary .now{font-weight:400;font-size:12px;color:#0a7d32;margin-left:6px}
+.log summary .new{font-size:12px;margin-left:6px}
+.log ul{margin:5px 0 2px;padding-left:4px;list-style:none}
+.log li{margin:4px 0;line-height:1.55}
+.log .t{display:inline-block;min-width:34px;text-align:center;font-size:11.5px;font-weight:700;border-radius:5px;
+        padding:0 5px;margin-right:6px}
+.log .t-新增{background:#e8f0ff;color:#1f4fa8}
+.log .t-強化{background:#fff4e0;color:#8a5400}
+.log .t-修正{background:#f1f5f9;color:#475569}
+#updwarn{background:#fff4e0;border:2px solid #e69100;border-radius:12px;padding:12px 16px;margin:0 0 14px;
+         font-size:14.5px;font-weight:700;color:#8a5400}
+#updwarn span{display:block;font-size:13px;font-weight:400;color:#6b4a12;margin-top:3px}
 @media print{
+  .log,#updwarn,#fontwarn{display:none!important}
+  .top{display:block}
   @page{size:A4 landscape;margin:8mm}
   header,#drop,.bar,#status,.ovbar,button{display:none!important}
   body{background:#fff;margin:0}
@@ -106,23 +135,30 @@ dialog::backdrop{background:rgba(15,23,42,.75)}
 </head>
 <body>
 <header>
-  <h1>🏷️ 標籤條碼檢查</h1>
+  <h1>🏷️ 標籤條碼檢查 <span id="ver" class="ver"></span></h1>
   <p>條碼解碼 × 兩次 OCR × 字形覆核 × 模板疊合比對——全部在你的瀏覽器裡跑，檔案不會上傳到任何地方</p>
 </header>
 <div class="wrap">
 
-  <div id="fontwarn" hidden></div>
-  <div id="drop">
-    <div class="big">把標籤 PDF（或掃描／拍照的 TIFF／JPG／PNG）拖到這裡</div>
-    <div class="sm">支援 Code 128（字在條碼下方）與 Data Matrix／QR（字在下方，或分多行排在圖案右側）</div>
-    <div class="sm">也可以點一下選檔　·　第一次開啟要下載約 24MB 的程式與辨識模型（之後瀏覽器會自己留著，不必再下載）</div>
-  </div>
-  <input id="picker" type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.tif,.tiff,.bmp" hidden>
+  <div id="updwarn" hidden></div>
+  <div class="top">
+    <div class="top-main">
+      <div id="fontwarn" hidden></div>
+      <div id="drop">
+        <div class="big">把標籤 PDF（或掃描／拍照的 TIFF／JPG／PNG）拖到這裡</div>
+        <div class="sm">支援 Code 128（字在條碼下方）與 Data Matrix／QR（字在下方，或分多行排在圖案右側）</div>
+        <div class="sm">也可以點一下選檔　·　第一次開啟要下載約 24MB 的程式與辨識模型（之後瀏覽器會自己留著，不必再下載）</div>
+      </div>
+      <input id="picker" type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.tif,.tiff,.bmp" hidden>
 
-  <div class="bar">
-    <label>這份稿應該有幾個條碼：<input id="expect" type="number" min="1" step="1" placeholder="選填"></label>
-    <span class="hint">填了才算「總數已核對」——不填的話，整批少印一個條碼程式是看不出來的。</span>
-    <button id="print" class="ghost" hidden>列印／存成 PDF</button>
+      <div class="bar">
+        <label>這份稿應該有幾個條碼：<input id="expect" type="number" min="1" step="1" placeholder="選填"></label>
+        <span class="hint">填了才算「總數已核對」——不填的話，整批少印一個條碼程式是看不出來的。</span>
+        <button id="print" class="ghost" hidden>列印／存成 PDF</button>
+      </div>
+    </div>
+    <!-- 更新紀錄放在拖放框旁邊，不放在結果表格旁邊——結果表格很寬，需要整個版面 -->
+    <aside id="log" class="log" hidden></aside>
   </div>
 
   <div id="status"></div>
@@ -218,11 +254,12 @@ dialog::backdrop{background:rgba(15,23,42,.75)}
 
 <script type="module">
 const ui = window.__ui;
-let check, DPI, DPI_HI, mismatchText, missingFonts;
+let check, DPI, DPI_HI, mismatchText, missingFonts, CHANGELOG, APP_VERSION;
 try {
   ({ check, DPI, DPI_HI } = await import('./js/app.js'));
   ({ mismatchText } = await import('./js/verdict.js'));
   ({ missingFonts } = await import('./js/template.js'));
+  ({ CHANGELOG, APP_VERSION } = await import('./js/changelog.js'));
 } catch (err) {
   ui.fail(err);
   throw err;
@@ -367,7 +404,7 @@ function report(res, name) {
   const html = [];
   html.push(`<div class="verdict ${s.level}">${esc(s.text)}
     <span class="sub">${esc(name)}　·　共 ${res.rows.length} 個條碼　·　NG ${s.ng} 個　·　待確認 ${s.chk} 個
-    　·　解析度 ${DPI}／${DPI_HI} dpi</span></div>`);
+    　·　解析度 ${DPI}／${DPI_HI} dpi　·　檢查工具版本 ${esc(APP_VERSION)}</span></div>`);
 
   if (res.warns.length)
     html.push('<div class="warns"><b>需要注意：</b><ul>'
@@ -460,7 +497,57 @@ function fontBanner() {
   return miss;
 }
 fontBanner();
-window.__fontBanner = fontBanner;   // 給自動化測試用
+window.__fontBanner = fontBanner;
+
+// ── 版本號與更新紀錄 ─────────────────────────────────────
+// 讓用的人知道「有更新了、更新了什麼」。上次打開時是哪一版記在這台電腦的瀏覽器裡，
+// 比那一版新的更新標 🆕；第一次打開的人則直接展開最新這一版的內容。
+const LS_KEY = 'label-barcode-check.lastSeenVersion';
+const lsGet = () => { try { return localStorage.getItem(LS_KEY); } catch (e) { return null; } };
+const lsSet = v => { try { localStorage.setItem(LS_KEY, v); } catch (e) { /* 無痕視窗等情況存不了，不影響使用 */ } };
+
+function renderLog(log, lastSeen) {
+  const el = $('#log');
+  const fresh = lastSeen && lastSeen < log[0].version;
+  const head = fresh
+    ? `<div class="fresh">🆕 已更新到 ${esc(log[0].version)} 版（你上次用的是 ${esc(lastSeen)}）</div>` : '';
+  el.innerHTML = `<h3>📝 更新紀錄</h3>${head}` + log.map((v, i) => {
+    const isNew = fresh && v.version > lastSeen;
+    const open = i === 0 || isNew ? ' open' : '';
+    return `<details${open}><summary>${esc(v.version)}`
+      // 開到舊版時最上面那筆是「最新」而不是「目前」——使用者實際跑的是 APP_VERSION 那一版
+      + (i === 0 ? `<span class="now">（${v.version === APP_VERSION ? '目前版本' : '最新版本'}）</span>` : '')
+      + (i > 0 && v.version === APP_VERSION ? '<span class="now">（你現在開的）</span>' : '')
+      + (isNew ? '<span class="new">🆕</span>' : '') + `</summary><ul>`
+      + v.items.map(([t, text]) => `<li><span class="t t-${esc(t)}">${esc(t)}</span>${esc(text)}</li>`).join('')
+      + '</ul></details>';
+  }).join('');
+  el.hidden = false;
+}
+
+$('#ver').textContent = '版本 ' + APP_VERSION;
+const lastSeen = lsGet();
+renderLog(CHANGELOG, lastSeen);
+lsSet(APP_VERSION);
+
+// 開到舊版的偵測：瀏覽器可能還留著上一版的快取，那是「明明更新了卻看不到」最常見的原因。
+// 另外用不同網址重抓一次更新紀錄（不會吃到快取），比對最上面那一筆的版次。
+async function checkForUpdate() {
+  try {
+    const latest = await import('./js/changelog.js?check=' + Date.now());
+    const newest = latest.CHANGELOG[0].version;
+    if (newest > APP_VERSION) {
+      const w = $('#updwarn');
+      w.innerHTML = `🔔 網站已經有新版本 ${esc(newest)}，你現在開的是舊的 ${esc(APP_VERSION)} 版`
+        + `<span>請按 <b>Ctrl＋F5</b> 強制重新整理。新版的更新內容已列在右邊的更新紀錄裡。</span>`;
+      w.hidden = false;
+      renderLog(latest.CHANGELOG, APP_VERSION);
+    }
+  } catch (e) { /* 沒有網路時查不到，不影響使用 */ }
+}
+checkForUpdate();
+window.__renderLog = renderLog;          // 給自動化測試用
+window.__checkForUpdate = checkForUpdate;   // 給自動化測試用
 
 ui.ready = true;
 ui.run = run;
