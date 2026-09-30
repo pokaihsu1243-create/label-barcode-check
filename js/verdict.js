@@ -49,6 +49,30 @@ export function shapeRead(rows) {
     });
   });
 
+  // 第二步：收編「差一點點沒併進去」的落單小群。
+  // 上面是一個一個依序分群，誰先來誰當群心——同一個字只要第二個實例跟第一個的相似度
+  // 剛好差一點（實測 0.918 對門檻 0.92），就會另起一群，後面的實例又都跑去新群，
+  // 第一個就被晾在一個只有自己的群裡，票數不足變成「?」，畫面上出現假的橘框。
+  // 這裡不放寬門檻：只有「本來就票數不足、只會給 ? 的小群」，而且它的群心跟某個
+  // 已成立的群心相似度達到同一個門檻（SIM_TH），才併過去。已經判定好的字不受影響。
+  for (let ci = 0; ci < cents.length; ci++) {
+    if (!members[ci].length || counts[ci] >= VOTE_MIN) continue;
+    let best = -1, bj = -1;
+    for (let cj = 0; cj < cents.length; cj++) {
+      if (cj === ci || counts[cj] < VOTE_MIN) continue;
+      const ratio = sizes[ci] / sizes[cj];
+      if (ratio < SIZE_LO || ratio > SIZE_HI) continue;
+      const s = dot(cents[ci], cents[cj]);
+      if (s > best) { best = s; bj = cj; }
+    }
+    if (best >= SIM_TH) {
+      members[bj].push(...members[ci]);
+      counts[bj] += counts[ci];
+      members[ci] = [];
+      counts[ci] = 0;
+    }
+  }
+
   const labels = [], confs = [];
   members.forEach(mem => {
     const votes = new Map();
@@ -82,7 +106,7 @@ export function shapeRead(rows) {
     r.shapeConf = cf.length ? Math.min(...cf) : 0;
     r.glyphLabels = chars.map((c, i) => [c, cf[i]]);
   });
-  return cents.length;
+  return members.filter(m => m.length).length;   // 併掉的空群不算
 }
 
 const pos1 = arr => arr.map(i => i + 1).join('、');
@@ -238,7 +262,9 @@ export function finalize(r) {
   if (!tpOk) {
     const miss = [...tp].map((c, i) => c === '?' ? i : -1).filter(i => i >= 0);
     r.verdict = 'CHECK';
-    r.reason = miss.length
+    r.reason = r.tplWhy
+      ? `模板疊合比對不適用：${r.tplWhy}；字形覆核票源仍是 OCR，不能當作獨立佐證`
+      : miss.length
       ? `模板疊合比對第 ${pos1(miss)} 字辨識不出（${r.dpi}dpi 與 ${r.dpiHi}dpi 都試過）；`
         + '字形覆核票源仍是 OCR，不能當作獨立佐證'
       : '模板疊合比對未完整辨識；字形覆核票源仍是 OCR，不能當作獨立佐證';
@@ -253,8 +279,16 @@ export function finalize(r) {
     + (r.verdict === 'OK' ? ' 全部一致' : ' 讀出的印字一致，但與條碼不符') + low;
 }
 
+/** finalize 的外層：模板這一軌不適用時，確保原因一定寫進說明。 */
+export function finalizeWithWhy(r) {
+  finalize(r);
+  if (r.verdict !== 'OK' && r.verdict !== 'NG' && r.tplWhy && !(r.reason || '').includes(r.tplWhy))
+    r.reason = `${r.reason}（模板疊合比對不適用：${r.tplWhy}）`;
+}
+
 /** 疊合比對的結果寫成人看得懂的一句話（判定本身已在 finalize 用掉這條證據）。 */
 export function tplNote(r) {
+  if (r.tplWhy) return { text: `疊合比對不適用：${r.tplWhy}`, weak: true };
   const tp = r.tpl || '';
   if (!tp) return null;
   if (tp.includes('?'))

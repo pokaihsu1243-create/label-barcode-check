@@ -3,8 +3,8 @@
 import { readBarcodes, prepareZXingModule } from '../vendor/zxing/es/reader/index.js';
 import { segmentGlyphs, pickTextLine, pickTextBlock, linearise, ctx2d, newCanvas } from './imgproc.js';
 import * as ocr from './ocr.js';
-import { templateRead } from './template.js';
-import { shapeRead, finalize, tplNote, charMismatches, MAX_SKEW } from './verdict.js';
+import { templateRead, missingFonts } from './template.js';
+import { shapeRead, finalizeWithWhy, tplNote, charMismatches, MAX_SKEW } from './verdict.js';
 import { compareImage, overviewImage } from './overlay.js';
 import * as io from './pdfio.js';
 import { labelFrames, ownerLabel } from './frames.js';
@@ -85,7 +85,9 @@ export function retryChecks(r) {
                         + '——不足以放行，保留待確認' });
 
   const nglyph = r.glyphs ? r.glyphs.length : t.lo.glyphs;
-  if (!r.tpl)
+  if (r.tplWhy)
+    out.push({ ok: false, label: '模板疊合比對', text: `不適用：${r.tplWhy}` });
+  else if (!r.tpl)
     out.push({ ok: false, label: '模板疊合比對',
                text: `未執行：切出 ${nglyph} 個字、條碼是 ${r.bc.length} 個字，數量對不上就無法逐字比形狀` });
   else if (t.conflict && t.conflict.length)
@@ -308,14 +310,16 @@ export async function check(file, expectTotal, progress) {
         } else { merged += '?'; margins.push(lo.margins[i]); }
       }
       r.tpl = merged;
-      r.tplFont = lo.font || hi.font || null;
+      r.tplFont = lo.why ? (hi.why ? null : hi.font) : lo.font;
+      // 兩個解析度都說「這一軌不適用」才算不適用；只有一邊不適用的話，另一邊照原本的補字規則處理
+      r.tplWhy = (lo.why && (hi.why || !hi.text)) ? lo.why : null;
       r.tplLo = lo.text;
       r.tplHi = hi.text;
       r.tplFilled = filled;
       r.tplMargin = margins.length ? Math.min(...margins) : 0;
       r.tplBad = [...merged].map((c, i) => (c !== '?' && c !== r.bc[i]) ? i : -1).filter(i => i >= 0);
     }
-    finalize(r);
+    finalizeWithWhy(r);
     r.tplNote = tplNote(r);
     // 疑似錯字：不論判定是什麼都列出來（待確認的列尤其需要，人才知道要看哪一個字）。
     // 這只是敘述，不會改變判定。
@@ -331,8 +335,8 @@ export async function check(file, expectTotal, progress) {
     }
     if (r._crop && gl.length) {
       const im = r._cmp
-        ? compareImage(r._cmp.canvas, r._cmp.glyphs, r.bc, r.ocr, r.glyphLabels || [], r.tpl, r.tplBad)
-        : compareImage(r._crop, gl, r.bc, r.ocr, r.glyphLabels || [], r.tpl, r.tplBad);
+        ? compareImage(r._cmp.canvas, r._cmp.glyphs, r.bc, r.ocr, r.glyphLabels || [], r.tplWhy ? '' : r.tpl, r.tplBad)
+        : compareImage(r._crop, gl, r.bc, r.ocr, r.glyphLabels || [], r.tplWhy ? '' : r.tpl, r.tplBad);
       if (im) r.cmp = png(im);
     }
   }
@@ -361,6 +365,11 @@ export async function check(file, expectTotal, progress) {
   });
 
   rows.forEach(r => { delete r._crop; delete r._glyphsHi; delete r._geom; delete r.glyphs; delete r._lines; delete r._cmp; });
+
+  const miss = missingFonts();
+  if (miss.length && rows.length)
+    warns.push(`這台電腦缺少 ${miss.join('、')} 字型，模板疊合比對停用——所有條碼最多只能判到「待確認」。`
+      + `請改在 Windows 電腦上檢查（Windows 內建這些字型）。`);
 
   let counted = false;
   if (expectTotal) {

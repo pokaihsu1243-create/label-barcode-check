@@ -374,7 +374,7 @@ function report(res, name) {
   for (const r of res.rows) {
     const [cls, label] = TAG[r.verdict] || ['t-ck', '待確認'];
     const note = r.tplNote
-      ? `<div class="${r.tplNote.weak ? 'weak' : ''}">${r.tplNote.bad ? '⚠ ' : '✓ '}${esc(r.tplNote.text)}</div>`
+      ? `<div class="${r.tplNote.weak ? 'weak' : ''}">${r.tplNote.bad ? '⚠ ' : (r.tplNote.weak ? '△ ' : '✓ ')}${esc(r.tplNote.text)}</div>`
       : '';
     html.push(`<tr>
       <td class="hint">第 ${r.page} 頁${r.label > 0 ? `<br>第 ${r.label} 張` : ''}${r.orient ? `<br>${r.orient}°` : ''}</td>
