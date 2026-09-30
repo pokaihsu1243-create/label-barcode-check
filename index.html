@@ -79,6 +79,9 @@ dialog::backdrop{background:rgba(15,23,42,.75)}
 .stale{background:#fff4e0;border:2px solid #e69100;border-radius:10px;padding:12px 16px;margin:14px 0;
        font-size:15px;font-weight:700;color:#ad6800}
 .stale span{display:block;font-size:13px;font-weight:400;color:#7a5200;margin-top:3px}
+#fontwarn{background:#fdecec;border:2px solid #e57373;border-radius:12px;padding:12px 16px;margin:0 0 14px;font-size:14.5px;color:#8a1c1c}
+#fontwarn b{color:#b00020}
+#fontwarn .sub{display:block;font-size:13px;color:#5f2a2a;margin-top:4px}
 /* 列印＝存成 PDF。版面刻意做成與桌面版報告相同：A4 橫式、表格縮排、圖縮小，
    讓「另存為 PDF」拿到的檔案跟桌面版自動產出的那份等價。 */
 @media print{
@@ -108,6 +111,7 @@ dialog::backdrop{background:rgba(15,23,42,.75)}
 </header>
 <div class="wrap">
 
+  <div id="fontwarn" hidden></div>
   <div id="drop">
     <div class="big">把標籤 PDF（或掃描／拍照的 TIFF／JPG／PNG）拖到這裡</div>
     <div class="sm">支援 Code 128（字在條碼下方）與 Data Matrix／QR（字在下方，或分多行排在圖案右側）</div>
@@ -214,10 +218,11 @@ dialog::backdrop{background:rgba(15,23,42,.75)}
 
 <script type="module">
 const ui = window.__ui;
-let check, DPI, DPI_HI, mismatchText;
+let check, DPI, DPI_HI, mismatchText, missingFonts;
 try {
   ({ check, DPI, DPI_HI } = await import('./js/app.js'));
   ({ mismatchText } = await import('./js/verdict.js'));
+  ({ missingFonts } = await import('./js/template.js'));
 } catch (err) {
   ui.fail(err);
   throw err;
@@ -441,6 +446,22 @@ out.addEventListener('click', e => {
 window.addEventListener('resize', () => out.querySelectorAll('.ovbox img').forEach(fitOverview));
 
 // 到這裡才算真的可以用了。載入期間有人先丟了檔案的話，現在接著跑。
+// 一打開就先檢查標籤字形。缺的話在最上面直接講清楚，不必等丟了檔案、跑完才發現白跑一趟。
+// （在缺字形的電腦上照樣可以跑，只是模板比對停用，結果最多到「待確認」、不會放行。）
+function fontBanner() {
+  const el = $('#fontwarn');
+  const miss = missingFonts();
+  if (!miss.length) { el.hidden = true; el.innerHTML = ''; return miss; }
+  el.innerHTML = `⚠ <b>這台電腦缺少 ${esc(miss.join('、'))} 字型</b>，模板疊合比對無法使用——`
+    + `在這台電腦上檢查，結果最多只能到「待確認」，不會放行任何標籤。`
+    + `<span class="sub">請改用 Windows 電腦檢查（Windows 10／11 內建 Arial 與 Calibri）。`
+    + `Mac 可裝 Microsoft Office 取得 Calibri；手機、平板通常兩種都沒有。</span>`;
+  el.hidden = false;
+  return miss;
+}
+fontBanner();
+window.__fontBanner = fontBanner;   // 給自動化測試用
+
 ui.ready = true;
 ui.run = run;
 status.textContent = '就緒——把標籤稿拖進上面的框，或點一下選檔。';
