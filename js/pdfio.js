@@ -122,16 +122,69 @@ export function textGeom(pos, W, H, clip) {
 }
 
 /**
- * 把頁面座標的點換算成「裁切並轉正之後」那張圖裡的 x。
- * pickTextLine 要靠它才知道哪一串字在條碼正下方。
+ * 把頁面座標的點換算成「裁切並轉正之後」那張圖裡的 [x, y]。
+ * 轉正後 x 軸＝條碼的閱讀方向、y 軸＝條碼自己的「下方」。
  */
-export function pageXInCrop(px, rect, ang) {
+export function pageToCrop(px, rect, ang) {
   const a = ((Math.round(ang) % 360) + 360) % 360;
   const [x0, y0, x1, y1] = rect;
-  if (a === 0) return px[0] - x0;
-  if (a === 180) return x1 - px[0];
-  if (a === 90) return px[1] - y0;              // 轉正後的 x 來自原本的 y
-  return y1 - px[1];                            // 270
+  if (a === 0) return [px[0] - x0, px[1] - y0];
+  if (a === 180) return [x1 - px[0], y1 - px[1]];
+  if (a === 90) return [px[1] - y0, x1 - px[0]];   // 轉正後的 x 來自原本的 y
+  return [y1 - px[1], px[0] - x0];                 // 270
+}
+
+/** pickTextLine 要靠它才知道哪一串字在條碼正下方。 */
+export function pageXInCrop(px, rect, ang) {
+  return pageToCrop(px, rect, ang)[0];
+}
+
+/** 2D 碼（Data Matrix、QR…）。只有這類才去找「右側」的文字——一維條碼的右邊常常就是下一個條碼。 */
+const MATRIX = new Set(['datamatrix', 'qrcode', 'microqrcode', 'rmqrcode', 'aztec', 'maxicode']);
+export function isMatrix(fmt) {
+  return MATRIX.has(String(fmt || '').toLowerCase().replace(/[^a-z]/g, ''));
+}
+
+export const RIGHT_FACTOR = 2.5;   // 右側往外抓幾倍的圖案寬度（再由標籤外框收邊）
+
+/**
+ * 條碼「右側」那塊文字區（以條碼自己的方向為準——顛倒 180° 的條碼，右側在頁面上是左邊）。
+ * 高度只取與圖案同高的範圍再加一點點餘裕：這種排版的文字是貼著圖案、落在圖案高度之內的；
+ * 往上下多抓會抓到標籤外框的圓角，被誤當成一行字。
+ */
+export function textGeomRight(pos, W, H, clip) {
+  const p = [pos.topLeft, pos.topRight, pos.bottomRight, pos.bottomLeft].map(q => [q.x, q.y]);
+  const rx = p[1][0] - p[0][0], ry = p[1][1] - p[0][1];
+  const rn = Math.hypot(rx, ry);
+  if (rn < 1) return { rect: null, ang: 0, skew: 99 };
+  const r = [rx / rn, ry / rn];
+  const d = [-r[1], r[0]];
+  const rp = p.map(q => q[0] * r[0] + q[1] * r[1]);
+  const dp = p.map(q => q[0] * d[0] + q[1] * d[1]);
+  const lo = a => Math.min(...a), hi = a => Math.max(...a);
+  const width = hi(rp) - lo(rp), thick = hi(dp) - lo(dp);
+  if (thick < 1 || width < 1) return { rect: null, ang: 0, skew: 99 };
+  const gap = width * 0.05, ext = width * RIGHT_FACTOR, vpad = thick * 0.05;
+  const corners = [];
+  for (const a of [hi(rp) + gap, hi(rp) + gap + ext])
+    for (const b of [lo(dp) - vpad, hi(dp) + vpad])
+      corners.push([r[0] * a + d[0] * b, r[1] * a + d[1] * b]);
+  const xs = corners.map(c => c[0]), ys = corners.map(c => c[1]);
+  const ang = Math.atan2(r[1], r[0]) * 180 / Math.PI;
+  const snapped = Math.round(ang / 90) * 90;
+  let x0 = Math.max(0, lo(xs)), y0 = Math.max(0, lo(ys));
+  let x1 = Math.min(W, hi(xs)), y1 = Math.min(H, hi(ys));
+  if (clip) {
+    x0 = Math.max(x0, clip[0]); y0 = Math.max(y0, clip[1]);
+    x1 = Math.min(x1, clip[2]); y1 = Math.min(y1, clip[3]);
+  }
+  if (x1 - x0 < 2 || y1 - y0 < 2) return { rect: null, ang: snapped, skew: 99 };
+  const centre = [(lo(rp) + hi(rp)) / 2 * r[0] + ((hi(dp) + lo(dp)) / 2) * d[0],
+                  (lo(rp) + hi(rp)) / 2 * r[1] + ((hi(dp) + lo(dp)) / 2) * d[1]];
+  return {
+    rect: [x0, y0, x1, y1], ang: snapped, skew: Math.abs(ang - snapped), centre,
+    bbox: [lo(p.map(q => q[0])), lo(p.map(q => q[1])), hi(p.map(q => q[0])), hi(p.map(q => q[1]))]
+  };
 }
 
 /**

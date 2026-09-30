@@ -214,6 +214,97 @@ export function pickTextLine(glyphs, centerX) {
 }
 
 /**
+ * 挑出「條碼右側那一塊多行文字」，回傳由上到下的各行（每行依 x 排好）。
+ *
+ * 給 2D 碼（Data Matrix／QR）用：這種標籤常把料號拆成好幾行排在圖案右邊，
+ * 例如 1234567 / 01 / 20260101，條碼內容是三行接起來的那一串。
+ *   ① 依垂直中心把字分成行
+ *   ② 每行從最靠近條碼的字開始往右連，字距太大就斷開（後面是別的欄位）；
+ *      開頭離條碼太遠的行不算——那不是貼著條碼排的字（例如標籤外框的圓角）
+ *   ③ 行距正常的相鄰幾行連成一塊，取與條碼中心同高的那一塊
+ *
+ * @param anchorY 條碼中心在這張裁切圖裡的 y
+ */
+export function pickTextBlock(glyphs, anchorY) {
+  if (!glyphs.length) return [];
+  const hs = glyphs.map(g => g.h).sort((a, b) => a - b);
+  const hm = hs[hs.length >> 1];
+  const cy = g => g.y + g.h / 2;
+
+  const raw = [];
+  for (const g of glyphs.slice().sort((a, b) => cy(a) - cy(b))) {
+    const last = raw[raw.length - 1];
+    const lastCy = last ? last.reduce((s, q) => s + cy(q), 0) / last.length : 0;
+    if (last && Math.abs(cy(g) - lastCy) <= hm * 0.6) last.push(g);
+    else raw.push([g]);
+  }
+
+  const lines = [];
+  for (const l of raw) {
+    l.sort((a, b) => a.x - b.x);
+    const run = [l[0]];
+    for (let i = 1; i < l.length; i++) {
+      if (l[i].x - (l[i - 1].x + l[i - 1].w) > hm * 2.0) break;
+      run.push(l[i]);
+    }
+    if (run[0].x <= hm * 3) lines.push(run);
+  }
+  if (!lines.length) return [];
+
+  const lcy = l => l.reduce((s, q) => s + cy(q), 0) / l.length;
+  const blocks = [[lines[0]]];
+  for (let i = 1; i < lines.length; i++) {
+    if (lcy(lines[i]) - lcy(lines[i - 1]) > hm * 2.2) blocks.push([lines[i]]);
+    else blocks[blocks.length - 1].push(lines[i]);
+  }
+  const span = b => [Math.min(...b.flat().map(g => g.y)), Math.max(...b.flat().map(g => g.y + g.h))];
+  if (anchorY != null) {
+    const hit = blocks.find(b => { const [t, u] = span(b); return anchorY >= t - hm && anchorY <= u + hm; });
+    if (hit) return hit;
+    return blocks.reduce((best, b) => {
+      const d = x => { const [t, u] = span(x); return Math.min(Math.abs(anchorY - t), Math.abs(anchorY - u)); };
+      return d(b) < d(best) ? b : best;
+    });
+  }
+  return blocks.reduce((a, b) => (b.flat().length > a.flat().length ? b : a));
+}
+
+/**
+ * 把多行文字「攤平」成一行：各行依序剪下來左右接起來，字框座標跟著平移。
+ * 攤平後疊合對照圖（三排對位）、模板比對就能沿用單行的做法；
+ * 字形描述向量只跟形狀有關，不受位置影響，不必重算。
+ * 原始位置另外保留給原圖對照頁用。
+ */
+export function linearise(cv, lines) {
+  const all = lines.flat();
+  const hs = all.map(g => g.h).sort((a, b) => a - b);
+  const hm = hs[hs.length >> 1];
+  const pad = Math.round(hm * 0.3), gap = Math.round(hm * 0.9);
+  const boxes = lines.map(l => {
+    const x0 = Math.max(0, Math.min(...l.map(g => g.x)) - pad);
+    const y0 = Math.max(0, Math.min(...l.map(g => g.y)) - pad);
+    const x1 = Math.min(cv.width, Math.max(...l.map(g => g.x + g.w)) + pad);
+    const y1 = Math.min(cv.height, Math.max(...l.map(g => g.y + g.h)) + pad);
+    return { x0, y0, w: x1 - x0, h: y1 - y0 };
+  });
+  const H = Math.max(...boxes.map(b => b.h));
+  const W = boxes.reduce((s, b) => s + b.w, 0) + gap * (lines.length - 1);
+  const out = newCanvas(W, H);
+  const c = ctx2d(out);
+  c.fillStyle = '#fff';
+  c.fillRect(0, 0, W, H);
+  const glyphs = [];
+  let ox = 0;
+  lines.forEach((l, i) => {
+    const b = boxes[i], oy = Math.round((H - b.h) / 2);
+    c.drawImage(cv, b.x0, b.y0, b.w, b.h, ox, oy, b.w, b.h);
+    for (const g of l) glyphs.push({ ...g, x: g.x - b.x0 + ox, y: g.y - b.y0 + oy });
+    ox += b.w + gap;
+  });
+  return { canvas: out, glyphs };
+}
+
+/**
  * 緊貼文字裁切。不這樣做的話，文字在 OCR 的 48px 輸入裡只佔一半高度，
  * CTC 會把相鄰相同的字（例如 77）併成一個——實測 277 被讀成 27。
  * 桌面版是靠 RapidOCR 內建的文字偵測自動達成同樣效果，這裡得自己來。

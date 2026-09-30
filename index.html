@@ -66,6 +66,8 @@ dialog::backdrop{background:rgba(15,23,42,.75)}
 .mm li{margin:1px 0}
 .mm b{font-family:Consolas,monospace;color:#b00020}
 .mm-len{color:#7a5200;margin-bottom:2px}
+.lay{margin-top:5px;color:#1f3a5f;background:#eef4ff;border:1px solid #d6e2f5;border-radius:6px;padding:4px 8px}
+.mono-s{font-family:Consolas,monospace;font-size:12px}
 .mm-raw{margin-top:4px;font-family:Consolas,monospace;font-size:12px;color:#475569}
 .rt{margin-top:6px;border:1px solid #e2e8f0;border-radius:6px;padding:5px 9px;background:#fbfcfd}
 .rt summary{cursor:pointer;font-weight:700;color:#1f3a5f}
@@ -108,6 +110,7 @@ dialog::backdrop{background:rgba(15,23,42,.75)}
 
   <div id="drop">
     <div class="big">把標籤 PDF（或掃描／拍照的 TIFF／JPG／PNG）拖到這裡</div>
+    <div class="sm">支援 Code 128（字在條碼下方）與 Data Matrix／QR（字在下方，或分多行排在圖案右側）</div>
     <div class="sm">也可以點一下選檔　·　第一次開啟要下載約 24MB 的程式與辨識模型（之後瀏覽器會自己留著，不必再下載）</div>
   </div>
   <input id="picker" type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.tif,.tiff,.bmp" hidden>
@@ -258,6 +261,21 @@ function mismatchBlock(r) {
   return `<div class="mm"><div class="mm-h">⚑ ${head}</div>${len}<ul>${lines.join('')}</ul></div>`;
 }
 
+/**
+ * 這一列「讀了哪裡、怎麼讀的」。多行排版、條碼原文夾空白、模板用哪個字形——
+ * 這些都會影響比對方式，要攤開來讓人知道，不能默默處理掉。
+ */
+function layoutNote(r) {
+  const bits = [];
+  const L = r.layout;
+  if (L && L.mode === 'right')
+    bits.push(`印字在條碼右側，分 ${L.lines.length} 行（${L.lines.join('＋')} 字），由上而下接起來再比對`);
+  if (/\s/.test(r.bcRaw || ''))
+    bits.push(`條碼原文含空白（<span class="mono-s">${esc(r.bcRaw).replace(/ /g, '␣')}</span>），比對時忽略空白`);
+  if (r.tplFont && r.tplFont !== 'Arial') bits.push(`模板比對字形：${esc(r.tplFont)}`);
+  return bits.length ? `<div class="lay">ⓘ ${bits.join('；')}</div>` : '';
+}
+
 /** 800dpi 重試紀錄：重試前後各讀到什麼、補了哪幾個字、哪裡衝突、最後依據什麼定案。 */
 function retryBlock(r) {
   const t = r.retry;
@@ -363,7 +381,7 @@ function report(res, name) {
       <td class="mono">${diff(r.bc, r.ocr)}</td>
       <td class="mono">${diff(r.ocr, r.bc)}<div class="hint">信心 ${r.score.toFixed(2)}</div></td>
       <td><span class="tag ${cls}">${label}</span></td>
-      <td class="why">${esc(r.reason)}${note}${mismatchBlock(r)}${retryBlock(r)}</td>
+      <td class="why">${esc(r.reason)}${note}${layoutNote(r)}${mismatchBlock(r)}${retryBlock(r)}</td>
       <td>${r.img ? `<img src="${r.img}" alt="原圖">` : ''}</td>
       <td class="cmp">${r.cmp ? `<img src="${r.cmp}" alt="疊合對照">` : '<span class="hint">—</span>'}</td>
     </tr>`);

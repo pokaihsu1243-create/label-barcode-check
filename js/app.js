@@ -1,7 +1,7 @@
 // 主流程：把一份標籤稿從頭走到尾，產出每一列的判定與對照圖。
 // 四條軌：①條碼解碼（不經 OCR）②兩個解析度各一次 OCR ③字形群聚覆核 ④模板疊合比對（不經 OCR）。
 import { readBarcodes, prepareZXingModule } from '../vendor/zxing/es/reader/index.js';
-import { segmentGlyphs, pickTextLine, ctx2d, newCanvas } from './imgproc.js';
+import { segmentGlyphs, pickTextLine, pickTextBlock, linearise, ctx2d, newCanvas } from './imgproc.js';
 import * as ocr from './ocr.js';
 import { templateRead } from './template.js';
 import { shapeRead, finalize, tplNote, charMismatches, MAX_SKEW } from './verdict.js';
@@ -23,6 +23,22 @@ prepareZXingModule({
 });
 
 const png = cv => cv.toDataURL('image/png');
+
+/**
+ * 讀一塊文字。單行就照舊整行讀；多行的話**每一行分開讀再依序接起來**——
+ * 辨識模型一次只看一行，硬把三行塞進去會亂掉。信心取各行最低的那個（保守）。
+ */
+async function readLines(cv, lines) {
+  if (lines.length <= 1) return ocr.recognize(cv, lines[0] || []);
+  let text = '', raw = '', score = 1;
+  for (const l of lines) {
+    const a = await ocr.recognize(cv, l);
+    text += a.text;
+    raw += (raw ? ' / ' : '') + a.raw;
+    score = Math.min(score, a.score);
+  }
+  return { text, raw, score };
+}
 
 /**
  * 文字區可以往左右抓多寬的界線。抓寬是為了容納「比圖案還寬的印字」，
@@ -155,42 +171,65 @@ export async function check(file, expectTotal, progress) {
     for (let i = 0; i < items.length; i++) {
       say(`第 ${pg.no} 頁：辨識第 ${i + 1}/${items.length} 個條碼…`);
       const { r, bbox, label, clip } = items[i];
-      const g = io.textGeom(r.position, W, H, clip);
+      const gBelow = io.textGeom(r.position, W, H, clip);
       const row = {
         page: pg.no, label: label + 1, fmt: String(r.format),
-        bc: ocr.norm(r.text), bcRaw: r.text, orient: ((g.ang % 360) + 360) % 360, skew: g.skew,
+        bc: ocr.norm(r.text), bcRaw: r.text, orient: ((gBelow.ang % 360) + 360) % 360, skew: gBelow.skew,
         ocr: '', ocr2: '', raw: '', score: 0, shape: '', shapeConf: 0,
         verdict: 'CHECK', reason: '', glyphs: [], dpi: DPI, dpiHi: DPI_HI,
         tpl: '', tplLo: '', tplHi: '', tplBad: [], tplMargin: 0, tplResConflict: [], tplFilled: []
       };
 
-      if (!g.rect || g.skew > MAX_SKEW) {
+      // ── 印字在哪裡 ──────────────────────────────────────────
+      // 一維條碼：一律在正下方（右邊常常就是下一個條碼，不能去找）。
+      // 2D 碼（Data Matrix／QR）：可能在下方，也可能分好幾行排在圖案右側
+      //   （例如 1234567 / 01 / 20260101，條碼內容是三行接起來那一串）。
+      //   兩個位置都看，取字比較多的那一邊——只看「哪邊有字」，不看字對不對得上條碼。
+      let g = gBelow, layout = 'below', crop = null, lines = [];
+      if (gBelow.rect && gBelow.skew <= MAX_SKEW) {
+        crop = io.upright(io.cropCanvas(pg.cv, gBelow.rect), gBelow.ang);
+        // 文字區是刻意抓寬的（印字可能比圖案寬），這裡再依實際切出來的字收成「一整行」
+        lines = [pickTextLine(segmentGlyphs(crop), io.pageXInCrop(gBelow.centre, gBelow.rect, gBelow.ang))];
+      }
+      if (io.isMatrix(r.format)) {
+        const gR = io.textGeomRight(r.position, W, H, clip);
+        if (gR.rect && gR.skew <= MAX_SKEW) {
+          const cropR = io.upright(io.cropCanvas(pg.cv, gR.rect), gR.ang);
+          const linesR = pickTextBlock(segmentGlyphs(cropR), io.pageToCrop(gR.centre, gR.rect, gR.ang)[1]);
+          const nR = linesR.flat().length, nB = lines.flat().length;
+          if (nR >= 3 && nR > nB) { g = gR; layout = 'right'; crop = cropR; lines = linesR; }
+        }
+      }
+      lines = lines.filter(l => l.length);
+
+      if (!crop || !g.rect || g.skew > MAX_SKEW) {
         row.reason = g.rect ? `條碼傾斜 ${g.skew.toFixed(1)}°，無法可靠對位`
-                            : '找不到條碼下方的文字區（可能被裁切或壓在邊界上）';
+                            : '找不到條碼旁的文字區（可能被裁切或壓在邊界上）';
         row.img = png(io.cropCanvas(pg.cv, bbox));
         rows.push(row); pageRows.push(row);
         continue;
       }
-
-      const crop = io.upright(io.cropCanvas(pg.cv, g.rect), g.ang);
-      // 文字區是刻意抓寬的（印字可能比圖案寬），這裡再依實際切出來的字收成「一整行」
-      const cxInCrop = io.pageXInCrop(g.centre, g.rect, g.ang);
-      const glyphs = pickTextLine(segmentGlyphs(crop), cxInCrop);
+      const glyphs = lines.flat();
       row.glyphs = glyphs;
+      row.layout = { mode: layout, lines: lines.map(l => l.length) };
 
       // 文字層只當輔助：隱藏文字、被蓋住的文字都抽得出來，不能代替實際印字
       const wtext = pg.page ? await io.pdfWords(pg.page, g.rect, DPI, g.ang) : null;
       row.pdfText = wtext == null ? null : ocr.norm(wtext);
 
-      const a = await ocr.recognize(crop, glyphs);
+      const a = await readLines(crop, lines);
       // PDF 的 800dpi 是真的重新渲染，資訊量確實增加；照片放大只是內插，沒有新資訊
       const hiReal = !!pg.page;
       const cropHi = hiReal
         ? io.upright(await io.renderRegion(pg.page, DPI_HI, g.rect, DPI), g.ang)
         : io.upscale(crop, 2);
-      const glyphsHi = pickTextLine(segmentGlyphs(cropHi),
-                                   io.pageXInCrop(g.centre, g.rect, g.ang) * (DPI_HI / DPI));
-      const b = await ocr.recognize(cropHi, glyphsHi);
+      const k = DPI_HI / DPI;
+      const linesHi = (layout === 'right'
+        ? pickTextBlock(segmentGlyphs(cropHi), io.pageToCrop(g.centre, g.rect, g.ang)[1] * k)
+        : [pickTextLine(segmentGlyphs(cropHi), io.pageXInCrop(g.centre, g.rect, g.ang) * k)]
+      ).filter(l => l.length);
+      const glyphsHi = linesHi.flat();
+      const b = await readLines(cropHi, linesHi);
       row.raw = a.raw;
       row.ocr = a.text;
       row.ocr2 = b.text;
@@ -201,10 +240,13 @@ export async function check(file, expectTotal, progress) {
       row.retry = {
         policy: '兩個解析度一律各獨立判讀一次',
         hiReal,                                   // false＝輸入是影像，800dpi 只是內插放大
-        lo: { dpi: DPI, ocr: a.text, score: a.score, glyphs: glyphs.length },
-        hi: { dpi: DPI_HI, ocr: b.text, score: b.score, glyphs: glyphsHi.length }
+        lo: { dpi: DPI, ocr: a.text, score: a.score, glyphs: glyphs.length, lines: lines.length },
+        hi: { dpi: DPI_HI, ocr: b.text, score: b.score, glyphs: glyphsHi.length, lines: linesHi.length }
       };
       row._crop = crop;
+      row._lines = lines;
+      // 多行的話攤平成一行給疊合對照圖用（三排對位才排得起來）；單行維持原樣
+      row._cmp = lines.length > 1 ? linearise(crop, lines) : null;
       row._glyphsHi = glyphsHi;
       row._hiReal = hiReal;
       row._geom = g;
@@ -266,6 +308,7 @@ export async function check(file, expectTotal, progress) {
         } else { merged += '?'; margins.push(lo.margins[i]); }
       }
       r.tpl = merged;
+      r.tplFont = lo.font || hi.font || null;
       r.tplLo = lo.text;
       r.tplHi = hi.text;
       r.tplFilled = filled;
@@ -287,7 +330,9 @@ export async function check(file, expectTotal, progress) {
       r.retry.checks = retryChecks(r);
     }
     if (r._crop && gl.length) {
-      const im = compareImage(r._crop, gl, r.bc, r.ocr, r.glyphLabels || [], r.tpl, r.tplBad);
+      const im = r._cmp
+        ? compareImage(r._cmp.canvas, r._cmp.glyphs, r.bc, r.ocr, r.glyphLabels || [], r.tpl, r.tplBad)
+        : compareImage(r._crop, gl, r.bc, r.ocr, r.glyphLabels || [], r.tpl, r.tplBad);
       if (im) r.cmp = png(im);
     }
   }
@@ -307,6 +352,7 @@ export async function check(file, expectTotal, progress) {
         return {
           ang: g.ang, ox: origin[0], oy: origin[1], gh: hs[hs.length >> 1],
           gboxes: r.glyphs.map(x => ({ x: x.x, y: x.y, w: x.w, h: x.h })),
+          lines: (r._lines || [r.glyphs]).map(l => l.map(x => ({ x: x.x, y: x.y, w: x.w, h: x.h }))),
           text: r.bc,
           status: r.verdict === 'NG' ? 'ng' : (r.verdict === 'OK' ? 'ok' : 'check')
         };
@@ -314,7 +360,7 @@ export async function check(file, expectTotal, progress) {
     return { no: pg.no, img: png(overviewImage(pg.cv, marks)) };
   });
 
-  rows.forEach(r => { delete r._crop; delete r._glyphsHi; delete r._geom; delete r.glyphs; });
+  rows.forEach(r => { delete r._crop; delete r._glyphsHi; delete r._geom; delete r.glyphs; delete r._lines; delete r._cmp; });
 
   let counted = false;
   if (expectTotal) {

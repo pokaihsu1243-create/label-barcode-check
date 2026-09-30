@@ -126,18 +126,26 @@ export function overviewImage(pageCv, marks, maxw = 1700) {
     c.translate(ox, oy);
     c.rotate(a);          // 之後都用「標籤自己的」座標：+x 是閱讀方向，+y 是它自己的下方
     const col = status === 'ng' ? '#d60000' : (status === 'check' ? '#e69100' : '#0a7d32');
+    // 多行（例如 Data Matrix 右側分三行）就照原本的分行，一行一行補在整塊印字的正下方，
+    // 每個字仍對齊它上面那個印刷字的 x——跟印字的排法一模一樣，才好逐字對。
+    const lines = (mk.lines && mk.lines.length) ? mk.lines : [gboxes];
     const x0 = Math.min(...gboxes.map(b => b.x)) - h * 0.2;
     const x1 = Math.max(...gboxes.map(b => b.x + b.w)) + h * 0.2;
-    const y0 = Math.max(...gboxes.map(b => b.y + b.h)) + h * 0.18;   // 印刷字的正下方
+    const y0 = Math.max(...gboxes.map(b => b.y + b.h)) + h * 0.18;   // 整塊印字的正下方
+    const rowH = h * 1.3, boxH = rowH * lines.length;
     // 底色先鋪白，補上去的字才不會跟原稿的線疊在一起看不清
     c.fillStyle = 'rgba(255,255,255,0.9)';
-    c.fillRect(x0, y0, x1 - x0, h * 1.3);
-    gboxes.forEach((b, i) => {
-      if (i < text.length) drawChar(c, text[i], b.x, y0 + h * 0.15, b.w, h, col, 1);
+    c.fillRect(x0, y0, x1 - x0, boxH);
+    let k = 0;
+    lines.forEach((line, li) => {
+      line.forEach(b => {
+        if (k < text.length) drawChar(c, text[k], b.x, y0 + li * rowH + h * 0.15, b.w, h, col, 1);
+        k++;
+      });
     });
     c.strokeStyle = col;
     c.lineWidth = Math.max(1.5, h * 0.06);
-    c.strokeRect(x0, y0, x1 - x0, h * 1.3);
+    c.strokeRect(x0, y0, x1 - x0, boxH);
     c.restore();
   }
   if (cv.width <= maxw) return cv;
