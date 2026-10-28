@@ -224,8 +224,9 @@ export function pickTextLine(glyphs, centerX) {
  *   ③ 行距正常的相鄰幾行連成一塊，取與條碼中心同高的那一塊
  *
  * @param anchorY 條碼中心在這張裁切圖裡的 y
+ * @param opts.wordBreak 遇到「明顯比字距大的空隙」就斷開（見下方 wordGap）
  */
-export function pickTextBlock(glyphs, anchorY) {
+export function pickTextBlock(glyphs, anchorY, opts = {}) {
   if (!glyphs.length) return [];
   const hs = glyphs.map(g => g.h).sort((a, b) => a - b);
   const hm = hs[hs.length >> 1];
@@ -243,8 +244,9 @@ export function pickTextBlock(glyphs, anchorY) {
   for (const l of raw) {
     l.sort((a, b) => a.x - b.x);
     const run = [l[0]];
+    const limit = opts.wordBreak ? wordGap(l, hm) : hm * 2.0;
     for (let i = 1; i < l.length; i++) {
-      if (l[i].x - (l[i - 1].x + l[i - 1].w) > hm * 2.0) break;
+      if (l[i].x - (l[i - 1].x + l[i - 1].w) > limit) break;
       run.push(l[i]);
     }
     if (run[0].x <= hm * 3) lines.push(run);
@@ -267,6 +269,23 @@ export function pickTextBlock(glyphs, anchorY) {
     });
   }
   return blocks.reduce((a, b) => (b.flat().length > a.flat().length ? b : a));
+}
+
+/**
+ * 一行字裡，多大的空隙算「換了一個詞」。
+ *
+ * 給右側文字用：收貨標籤這類版面，值的後面常常緊接著下一個欄位的名稱
+ * （例如「123456 No.:」），中間只隔一個空白，
+ * 用原本「超過兩個字高才斷」的標準會把兩者接成一串。
+ * 這裡看的是「同一行字自己的字距」：比一般字距大三倍以上、而且至少 0.35 個字高，
+ * 才算是詞與詞之間的空白。數字 1 兩側的留白比較大，但到不了這個程度。
+ */
+function wordGap(line, hm) {
+  const gaps = [];
+  for (let i = 1; i < line.length; i++) gaps.push(line[i].x - (line[i - 1].x + line[i - 1].w));
+  if (!gaps.length) return hm * 2.0;
+  const g = gaps.slice().sort((a, b) => a - b)[gaps.length >> 1];
+  return Math.min(hm * 2.0, Math.max(Math.max(g, 1) * 3, hm * 0.35));
 }
 
 /**

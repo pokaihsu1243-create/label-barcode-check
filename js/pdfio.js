@@ -134,6 +134,19 @@ export function pageToCrop(px, rect, ang) {
   return [y1 - px[1], px[0] - x0];                 // 270
 }
 
+/** pageToCrop 的反向：裁切並轉正之後那張圖裡的一個框，換回頁面座標的框。 */
+export function cropBoxToPage(box, rect, ang) {
+  const a = ((Math.round(ang) % 360) + 360) % 360;
+  const [x0, y0, x1, y1] = rect;
+  const pt = (cx, cy) => a === 0 ? [cx + x0, cy + y0]
+    : a === 180 ? [x1 - cx, y1 - cy]
+    : a === 90 ? [x1 - cy, cx + y0]
+    : [cy + x0, y1 - cx];                          // 270
+  const p = [pt(box[0], box[1]), pt(box[2], box[3])];
+  return [Math.min(p[0][0], p[1][0]), Math.min(p[0][1], p[1][1]),
+          Math.max(p[0][0], p[1][0]), Math.max(p[0][1], p[1][1])];
+}
+
 /** pickTextLine 要靠它才知道哪一串字在條碼正下方。 */
 export function pageXInCrop(px, rect, ang) {
   return pageToCrop(px, rect, ang)[0];
@@ -145,7 +158,12 @@ export function isMatrix(fmt) {
   return MATRIX.has(String(fmt || '').toLowerCase().replace(/[^a-z]/g, ''));
 }
 
-export const RIGHT_FACTOR = 2.5;   // 右側往外抓幾倍的圖案寬度（再由標籤外框收邊）
+// 右側往外抓幾倍的圖案寬度（再由標籤外框或鄰居條碼收邊）。收貨標籤的料號字級很大，
+// 一行字寬到 QR 的 6 倍；抓不夠寬就只讀到前幾碼。
+export const RIGHT_FACTOR = 8;
+// 垂直方向：往上只多抓一點（上方常是標題或別的欄位），往下多抓一些——
+// 實稿裡值的文字跟 QR 是底部對齊、字比 QR 低，最多超出 QR 高度的 12%。
+export const RIGHT_PAD_UP = 0.05, RIGHT_PAD_DOWN = 0.25;
 
 /**
  * 條碼「右側」那塊文字區（以條碼自己的方向為準——顛倒 180° 的條碼，右側在頁面上是左邊）。
@@ -164,10 +182,10 @@ export function textGeomRight(pos, W, H, clip) {
   const lo = a => Math.min(...a), hi = a => Math.max(...a);
   const width = hi(rp) - lo(rp), thick = hi(dp) - lo(dp);
   if (thick < 1 || width < 1) return { rect: null, ang: 0, skew: 99 };
-  const gap = width * 0.05, ext = width * RIGHT_FACTOR, vpad = thick * 0.05;
+  const gap = width * 0.05, ext = width * RIGHT_FACTOR;
   const corners = [];
   for (const a of [hi(rp) + gap, hi(rp) + gap + ext])
-    for (const b of [lo(dp) - vpad, hi(dp) + vpad])
+    for (const b of [lo(dp) - thick * RIGHT_PAD_UP, hi(dp) + thick * RIGHT_PAD_DOWN])
       corners.push([r[0] * a + d[0] * b, r[1] * a + d[1] * b]);
   const xs = corners.map(c => c[0]), ys = corners.map(c => c[1]);
   const ang = Math.atan2(r[1], r[0]) * 180 / Math.PI;
@@ -203,7 +221,10 @@ export async function pdfWords(page, rect, dpi, ang) {
       const fh = Math.hypot(m[2], m[3]) || Math.hypot(m[0], m[1]);
       const w = (it.width || 0) * vp.scale;
       const x0 = m[4], y1 = m[5], y0 = y1 - fh, x1 = x0 + w;
-      if (x1 < rect[0] || x0 > rect[2] || y1 < rect[1] || y0 > rect[3]) continue;
+      // 字的「中心點」要落在範圍內才算，只碰到邊不算——字級很大時多留的邊界也跟著大，
+      // 用「有碰到就算」會把下一行的說明文字也抓進來（實測抓到 DESCRIPTION 那一行）。
+      const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+      if (cx < rect[0] || cx > rect[2] || cy < rect[1] || cy > rect[3]) continue;
       hits.push({ x: x0, y: y0, s: it.str });
     }
     if (!hits.length) return null;

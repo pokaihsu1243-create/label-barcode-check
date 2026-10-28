@@ -112,6 +112,25 @@ export function retryChecks(r) {
   return out;
 }
 
+/**
+ * 右側文字區的界線。跟 clipFor 不同的地方：右邊的鄰居條碼以它「本身的左緣」為界，
+ * 而不是兩個條碼中心的中線——收貨標籤上值的文字常常一路寫到下一個 QR 前面，
+ * 用中線會把最後一兩個字切掉（實測一個 6 碼的值，最後一碼剛好壓在中線上）。
+ * 中間夾著的下一個欄位名稱（例如「No.:」）交給 pickTextBlock 的斷詞處理。
+ */
+function clipRightFor(it, items, frames, W, H) {
+  if (it.label >= 0 && frames[it.label]) return frames[it.label].slice();
+  const c = clipFor(it, items, frames, W, H);
+  const [bx0, by0, bx1, by1] = it.bbox;
+  let right = W;
+  for (const o of items) {
+    if (o === it) continue;
+    const overlap = Math.min(by1, o.bbox[3]) - Math.max(by0, o.bbox[1]);
+    if (o.bbox[0] >= bx1 && overlap > 0) right = Math.min(right, o.bbox[0] - 2);
+  }
+  return [c[0], c[1], right, c[3]];
+}
+
 /** 整份檔的結論與燈號。放行只給「乾淨且總數已核對」。 */
 export function summarize(rows, warns, counted) {
   const ng = rows.filter(r => r.verdict === 'NG').length;
@@ -167,12 +186,15 @@ export async function check(file, expectTotal, progress) {
     const frames = pg.page ? await labelFrames(pg.page, DPI) : [];
     items.forEach(it => { it.label = ownerLabel(it.bbox, frames); });
     items.sort((a, b) => a.label - b.label || a.bbox[1] - b.bbox[1] || a.bbox[0] - b.bbox[0]);
-    items.forEach(it => { it.clip = clipFor(it, items, frames, W, H); });
+    items.forEach(it => {
+      it.clip = clipFor(it, items, frames, W, H);
+      it.clipR = clipRightFor(it, items, frames, W, H);
+    });
 
     const pageRows = [];
     for (let i = 0; i < items.length; i++) {
       say(`第 ${pg.no} 頁：辨識第 ${i + 1}/${items.length} 個條碼…`);
-      const { r, bbox, label, clip } = items[i];
+      const { r, bbox, label, clip, clipR } = items[i];
       const gBelow = io.textGeom(r.position, W, H, clip);
       const row = {
         page: pg.no, label: label + 1, fmt: String(r.format),
@@ -194,12 +216,14 @@ export async function check(file, expectTotal, progress) {
         lines = [pickTextLine(segmentGlyphs(crop), io.pageXInCrop(gBelow.centre, gBelow.rect, gBelow.ang))];
       }
       if (io.isMatrix(r.format)) {
-        const gR = io.textGeomRight(r.position, W, H, clip);
+        const gR = io.textGeomRight(r.position, W, H, clipR);
         if (gR.rect && gR.skew <= MAX_SKEW) {
           const cropR = io.upright(io.cropCanvas(pg.cv, gR.rect), gR.ang);
-          const linesR = pickTextBlock(segmentGlyphs(cropR), io.pageToCrop(gR.centre, gR.rect, gR.ang)[1]);
-          const nR = linesR.flat().length, nB = lines.flat().length;
-          if (nR >= 3 && nR > nB) { g = gR; layout = 'right'; crop = cropR; lines = linesR; }
+          const linesR = pickTextBlock(segmentGlyphs(cropR), io.pageToCrop(gR.centre, gR.rect, gR.ang)[1],
+                                       { wordBreak: true });
+          // 選邊：右側有「緊貼著圖案」的字（pickTextBlock 只收開頭貼近圖案的行）就用右側。
+          // 原本是比哪邊字多，但收貨標籤上數量欄的 QR 下方剛好有另一個欄位的文字，字數比右邊多，會選錯邊。
+          if (linesR.flat().length >= 2) { g = gR; layout = 'right'; crop = cropR; lines = linesR; }
         }
       }
       lines = lines.filter(l => l.length);
@@ -216,7 +240,14 @@ export async function check(file, expectTotal, progress) {
       row.layout = { mode: layout, lines: lines.map(l => l.length) };
 
       // 文字層只當輔助：隱藏文字、被蓋住的文字都抽得出來，不能代替實際印字
-      const wtext = pg.page ? await io.pdfWords(pg.page, g.rect, DPI, g.ang) : null;
+      let wrect = g.rect;
+      if (glyphs.length) {
+        const hs = glyphs.map(q => q.h).sort((p, q) => p - q), m = hs[hs.length >> 1] * 0.3;
+        wrect = io.cropBoxToPage([Math.min(...glyphs.map(q => q.x)) - m, Math.min(...glyphs.map(q => q.y)) - m,
+                                  Math.max(...glyphs.map(q => q.x + q.w)) + m, Math.max(...glyphs.map(q => q.y + q.h)) + m],
+                                 g.rect, g.ang);
+      }
+      const wtext = pg.page ? await io.pdfWords(pg.page, wrect, DPI, g.ang) : null;
       row.pdfText = wtext == null ? null : ocr.norm(wtext);
 
       const a = await readLines(crop, lines);
@@ -227,7 +258,7 @@ export async function check(file, expectTotal, progress) {
         : io.upscale(crop, 2);
       const k = DPI_HI / DPI;
       const linesHi = (layout === 'right'
-        ? pickTextBlock(segmentGlyphs(cropHi), io.pageToCrop(g.centre, g.rect, g.ang)[1] * k)
+        ? pickTextBlock(segmentGlyphs(cropHi), io.pageToCrop(g.centre, g.rect, g.ang)[1] * k, { wordBreak: true })
         : [pickTextLine(segmentGlyphs(cropHi), io.pageXInCrop(g.centre, g.rect, g.ang) * k)]
       ).filter(l => l.length);
       const glyphsHi = linesHi.flat();
@@ -250,6 +281,7 @@ export async function check(file, expectTotal, progress) {
       // 多行的話攤平成一行給疊合對照圖用（三排對位才排得起來）；單行維持原樣
       row._cmp = lines.length > 1 ? linearise(crop, lines) : null;
       row._glyphsHi = glyphsHi;
+      row._linesHi = linesHi;
       row._hiReal = hiReal;
       row._geom = g;
       row.img = png(io.upright(io.cropCanvas(pg.cv, [
@@ -292,9 +324,10 @@ export async function check(file, expectTotal, progress) {
     if (gl.length && gl.length === r.bc.length) {
       // 兩個解析度都跑，不是「只在不方便時才重試」——否則 400dpi 讀錯但讀得很完整的列
       // 永遠不會被複查，等於只在對自己有利時才複查。成本可以忽略（每字 36 次內積）。
-      const lo = templateRead(gl);
+      // 傳入分行：多行標籤每一行要各自量基線，否則不同行的字會被誤判成「掉到基線下」
+      const lo = templateRead(gl, undefined, r._lines);
       const hiGl = r._glyphsHi || [];
-      const hi = hiGl.length === r.bc.length ? templateRead(hiGl) : { text: '', margins: [] };
+      const hi = hiGl.length === r.bc.length ? templateRead(hiGl, undefined, r._linesHi) : { text: '', margins: [] };
       const n = lo.text.length;
       r.tplResConflict = [];
       for (let i = 0; i < Math.min(n, hi.text.length); i++)
@@ -364,7 +397,7 @@ export async function check(file, expectTotal, progress) {
     return { no: pg.no, img: png(overviewImage(pg.cv, marks)) };
   });
 
-  rows.forEach(r => { delete r._crop; delete r._glyphsHi; delete r._geom; delete r.glyphs; delete r._lines; delete r._cmp; });
+  rows.forEach(r => { delete r._crop; delete r._glyphsHi; delete r._geom; delete r.glyphs; delete r._lines; delete r._linesHi; delete r._cmp; });
 
   const miss = missingFonts();
   if (miss.length && rows.length)

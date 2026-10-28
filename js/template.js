@@ -5,6 +5,7 @@
 import { GLYPH_N, areaResize, dot, newCanvas, ctx2d } from './imgproc.js';
 
 export const TPL_CAND = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+export const TPL_LOWER = 'abcdefghijklmnopqrstuvwxyz';   // 只在印字裡真的看得到小寫時才加入（見 lineClasses）
 export const TPL_MIN_MARGIN = 0.02;      // 最佳與次佳太接近就當作分不出來
 
 // 標籤稿實際用到的字形。Code 128 那批是 Arial；Data Matrix 那批（字排在圖案右側、分三行）是 Calibri。
@@ -105,12 +106,69 @@ function tpl(ch, h, font) {
   return cache.get(key);
 }
 
-function readWith(glyphs, font) {
+// ── 小寫字母：先用「字在這一行裡的位置」縮小候選，再比形狀 ─────────────
+// 形狀比對前會把字縮放成同樣大小，所以 c 和 C、o 和 O、p 和 P 單看形狀幾乎一樣。
+// 印刷上分辨它們靠的是位置：a c e o s… 只有 x 字高（約大寫的 0.72），
+// p g q y j 會掉到基線下面。這兩個量從印出來的字就量得到，不必看 OCR、也不必看條碼。
+const metricCache = new Map();
+function charMetrics(ch, font) {
+  const key = ch + '@' + font;
+  if (metricCache.has(key)) return metricCache.get(key);
+  const c = ctx2d(newCanvas(8, 8));
+  c.font = `200px "${font}"`;
+  const cap = c.measureText('H').actualBoundingBoxAscent || 143;
+  const m = c.measureText(ch);
+  const asc = m.actualBoundingBoxAscent || 0, des = m.actualBoundingBoxDescent || 0;
+  const r = { rel: (asc + des) / cap, desc: des > cap * 0.1 };
+  metricCache.set(key, r);
+  return r;
+}
+
+const SHORT_REL = 0.85;      // 比大寫矮到這個程度＝小寫的 x 字高（Arial／Calibri 約 0.72）
+const DESC_REL = 0.12;       // 底部掉到基線下超過大寫高度的這個比例＝下伸字母（p g q y j）
+const REL_TOL = 0.15;        // 候選字的預期高度跟實際高度允許的誤差
+
+/**
+ * 量出每個字在它那一行裡的「相對高度」與「有沒有掉到基線下」，並判斷這一行有沒有小寫。
+ * 基線＝這一行大多數字的底部；大寫高＝貼在基線上、最高那一群字的高度。
+ * 整行都是貼著基線的大寫高度（純數字、純大寫）→ 沒有小寫的證據 → 完全照舊（不加小寫候選）。
+ */
+function lineClasses(glyphs, lines) {
+  const groups = (lines && lines.length) ? lines : [glyphs];
+  const info = new Map();
+  let lower = false;
+  for (const line of groups) {
+    if (!line.length) continue;
+    const bottoms = line.map(g => g.y + g.h).sort((a, b) => a - b);
+    const base = bottoms[bottoms.length >> 1];
+    const hs0 = line.map(g => g.h).sort((a, b) => a - b);
+    const tol = hs0[hs0.length >> 1] * 0.08;
+    const onBase = line.filter(g => Math.abs(g.y + g.h - base) <= tol);
+    const top = Math.max(...(onBase.length ? onBase : line).map(g => g.h));
+    const tall = (onBase.length ? onBase : line).filter(g => g.h >= top * 0.85).map(g => g.h).sort((a, b) => a - b);
+    const cap = tall[tall.length >> 1] || top;
+    for (const g of line) {
+      const rel = g.h / cap, desc = (g.y + g.h - base) > cap * DESC_REL;
+      if (rel < SHORT_REL || desc) lower = true;
+      info.set(g, { rel, desc });
+    }
+  }
+  return { info, lower };
+}
+
+function readWith(glyphs, font, cls) {
   let out = '', simSum = 0;
   const margins = [], best = [];
+  const cand = cls && cls.lower ? TPL_CAND + TPL_LOWER : TPL_CAND;
   for (const g of glyphs) {
     const sims = [];
-    for (const ch of TPL_CAND) {
+    const gi = cls && cls.lower ? cls.info.get(g) : null;
+    for (const ch of cand) {
+      if (gi) {
+        const m = charMetrics(ch, font);
+        if (m.desc !== gi.desc) continue;
+        if (Math.abs(gi.rel / m.rel - 1) > REL_TOL) continue;
+      }
       const t = tpl(ch, g.h, font);
       if (t) sims.push([dot(g.v, t), ch]);
     }
@@ -141,14 +199,15 @@ export function missingFonts() {
  *   ② 最像的字形也不夠像——印的不是已知字形
  *   ③ 兩種字形像到分不出來——不知道該信哪一種
  */
-export function templateRead(glyphs, fonts = TPL_FONTS) {
+export function templateRead(glyphs, fonts = TPL_FONTS, lines = null) {
   const empty = why => ({ text: '', margins: [], best: [], font: null, fit: 0, why });
   if (!glyphs || !glyphs.length) return empty(null);
   const missing = fonts.filter(f => !fontAvailable(f));
   if (missing.length && fonts === TPL_FONTS)
     return empty(`這台電腦缺少 ${missing.join('、')} 字型，無法比較印字是哪一種字形`);
 
-  const ranked = fonts.filter(fontAvailable).map(f => readWith(glyphs, f)).sort((a, b) => b.fit - a.fit);
+  const cls = lineClasses(glyphs, lines);
+  const ranked = fonts.filter(fontAvailable).map(f => readWith(glyphs, f, cls)).sort((a, b) => b.fit - a.fit);
   if (!ranked.length) return empty('這台電腦沒有可用的標籤字形');
   const [top, second] = ranked;
   const blank = why => ({ ...top, text: '?'.repeat(glyphs.length), why });
