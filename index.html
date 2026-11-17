@@ -147,7 +147,7 @@ dialog::backdrop{background:rgba(15,23,42,.75)}
       <div id="drop">
         <div class="big">把標籤 PDF（或掃描／拍照的 TIFF／JPG／PNG）拖到這裡</div>
         <div class="sm">支援 Code 128（字在條碼下方）與 Data Matrix／QR（字在下方，或分多行排在圖案右側）</div>
-        <div class="sm">也可以點一下選檔　·　第一次開啟要下載約 24MB 的程式與辨識模型（之後瀏覽器會自己留著，不必再下載）</div>
+        <div class="sm">也可以點一下選檔　·　第一次開啟要下載約 24MB 的程式與辨識模型（之後存在這台電腦，不必再下載）</div>
       </div>
       <input id="picker" type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.tif,.tiff,.bmp" hidden>
 
@@ -557,6 +557,16 @@ if (ui.queued) {
   ui.queued = null;
   run(f);
 }
+
+// 一打開網頁就在背景把辨識模型準備好，放檔案時就不用再等。
+// 放檔案時如果還沒好，check() 會接著等同一個載入（不會載兩次），狀態列交給那邊顯示。
+(async () => {
+  const { init } = await import('./js/ocr.js');
+  try {
+    await init(m => { if (!busy && !lastFile) status.textContent = m; });
+    if (!busy && !lastFile) status.textContent = '就緒——辨識模型已準備好，把標籤稿拖進上面的框，或點一下選檔。';
+  } catch (e) { /* 放檔案時會再載一次，失敗原因會在那時顯示 */ }
+})();
 
 window.__check = check;      // 給自動化測試用
 </script>
