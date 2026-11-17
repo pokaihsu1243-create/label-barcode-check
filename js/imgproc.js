@@ -244,9 +244,10 @@ export function pickTextBlock(glyphs, anchorY, opts = {}) {
   for (const l of raw) {
     l.sort((a, b) => a.x - b.x);
     const run = [l[0]];
-    const limit = opts.wordBreak ? wordGap(l, hm) : hm * 2.0;
+    const gaps = opts.wordBreak ? inkGaps(l) : l.slice(1).map((g, i) => g.x - (l[i].x + l[i].w));
+    const limit = opts.wordBreak ? wordGap(gaps, hm) : hm * 2.0;
     for (let i = 1; i < l.length; i++) {
-      if (l[i].x - (l[i - 1].x + l[i - 1].w) > limit) break;
+      if (gaps[i - 1] > limit) break;
       run.push(l[i]);
     }
     if (run[0].x <= hm * 3) lines.push(run);
@@ -278,11 +279,23 @@ export function pickTextBlock(glyphs, anchorY, opts = {}) {
  * （例如「123456 No.:」），中間只隔一個空白，
  * 用原本「超過兩個字高才斷」的標準會把兩者接成一串。
  * 這裡看的是「同一行字自己的字距」：比一般字距大三倍以上、而且至少 0.35 個字高，
- * 才算是詞與詞之間的空白。數字 1 兩側的留白比較大，但到不了這個程度。
+ * 才算是詞與詞之間的空白。字距用 inkGaps 扣掉窄字自帶的留白後再比。
  */
-function wordGap(line, hm) {
-  const gaps = [];
-  for (let i = 1; i < line.length; i++) gaps.push(line[i].x - (line[i - 1].x + line[i - 1].w));
+/**
+ * 相鄰兩字之間的空隙，扣掉窄字自帶的留白。
+ * 等寬數字裡，「1」的筆畫只佔字寬的一半左右，左右各空出一大塊——
+ * 「11」兩個 1 之間的空隙跟一個空白鍵差不多大，直接比的話會在兩個 1 中間斷開
+ * （實測一個 11 開頭的批號只讀到第一個 1，整列變成讀不到字）。
+ * 所以比一般字（這一行字寬的中位數）窄多少，就當作它兩側各多了一半的留白，先扣掉再比。
+ */
+function inkGaps(line) {
+  const ws = line.map(g => g.w).sort((a, b) => a - b);
+  const wm = ws[ws.length >> 1];
+  const slack = g => Math.max(0, wm - g.w) / 2;
+  return line.slice(1).map((g, i) => g.x - (line[i].x + line[i].w) - slack(line[i]) - slack(g));
+}
+
+function wordGap(gaps, hm) {
   if (!gaps.length) return hm * 2.0;
   const g = gaps.slice().sort((a, b) => a - b)[gaps.length >> 1];
   return Math.min(hm * 2.0, Math.max(Math.max(g, 1) * 3, hm * 0.35));
